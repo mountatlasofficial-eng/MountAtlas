@@ -1,4 +1,4 @@
-AzerColectMounts = {
+MountAtlasMounts = {
   -- reset: daily, weekly, repeatable, event, special
   -- optional: dropChance = "Aprox. 1%", eventName = "Brewfest", route = "Step 1 > Step 2"
   -- guide optional: method, coordinates, requirements, respawn, macro, tomtom
@@ -1656,7 +1656,91 @@ AzerColectMounts = {
   },
 }
 
-AzerColectAchievements = {
+local function MountAtlasAddCuratedMount(entry)
+  table.insert(MountAtlasMounts, entry)
+end
+
+local function MountAtlasAddWrathReputationMount(name, itemID, spellID, faction, vendor, zone, requirement, note)
+  local cost = "Champion's Seals"
+
+  if faction == "Wyrmrest Accord" then
+    cost = "2,000 gold before discounts"
+  elseif name == "Ice Mammoth" then
+    cost = "1,000 gold before discounts"
+  elseif name == "Grand Ice Mammoth" then
+    cost = "10,000 gold before discounts"
+  elseif faction == "The Oracles" then
+    cost = "Mysterious Egg"
+  end
+
+  MountAtlasAddCuratedMount({
+    name = name,
+    itemID = itemID,
+    spellID = spellID,
+    boss = vendor,
+    vendor = vendor,
+    zone = zone,
+    source = "Reputation",
+    expansion = "Wrath",
+    reset = "special",
+    requirement = requirement,
+    cost = cost,
+    guideUrl = "https://www.wowhead.com/item=" .. tostring(itemID),
+    note = note or (faction .. " reputation reward.")
+  })
+end
+
+local wrathReputationMounts = {
+  { "Red Drake", 43955, 59570, "Wyrmrest Accord", "Cielstrasza", "Dragonblight", "Wyrmrest Accord Exalted", "Wyrmrest Accord vendor at Wyrmrest Temple." },
+  { "Ice Mammoth", 43958, 59799, "The Sons of Hodir", "Lillehoff", "The Storm Peaks", "The Sons of Hodir Revered", "Sons of Hodir vendor at Dun Niffelem." },
+  { "Grand Ice Mammoth", 43961, 61470, "The Sons of Hodir", "Lillehoff", "The Storm Peaks", "The Sons of Hodir Exalted", "Three-seat Sons of Hodir reputation mount." },
+  { "Green Proto-Drake", 44707, 61294, "The Oracles", "Geen", "Sholazar Basin", "The Oracles Revered", "Chance from Mysterious Egg purchased from Geen." },
+
+  { "Swift Gray Steed", 46752, 65640, "Stormwind", "Stormwind Quartermaster", "Argent Tournament", "Stormwind Champion", "Alliance Argent Tournament faction mount." },
+  { "Stormwind Steed", 45125, 63232, "Stormwind", "Stormwind Quartermaster", "Argent Tournament", "Stormwind Champion", "Alliance Argent Tournament faction mount." },
+  { "Swift Moonsaber", 46744, 65638, "Darnassus", "Darnassus Quartermaster", "Argent Tournament", "Darnassus Champion", "Alliance Argent Tournament faction mount." },
+  { "Darnassian Nightsaber", 45591, 63637, "Darnassus", "Darnassus Quartermaster", "Argent Tournament", "Darnassus Champion", "Alliance Argent Tournament faction mount." },
+  { "Swift Violet Ram", 46748, 65643, "Ironforge", "Ironforge Quartermaster", "Argent Tournament", "Ironforge Champion", "Alliance Argent Tournament faction mount." },
+  { "Ironforge Ram", 45586, 63636, "Ironforge", "Ironforge Quartermaster", "Argent Tournament", "Ironforge Champion", "Alliance Argent Tournament faction mount." },
+  { "Turbostrider", 46747, 65642, "Gnomeregan", "Gnomeregan Quartermaster", "Argent Tournament", "Gnomeregan Champion", "Alliance Argent Tournament faction mount." },
+  { "Gnomeregan Mechanostrider", 45589, 63638, "Gnomeregan", "Gnomeregan Quartermaster", "Argent Tournament", "Gnomeregan Champion", "Alliance Argent Tournament faction mount." },
+  { "Great Red Elekk", 46745, 65637, "Exodar", "Exodar Quartermaster", "Argent Tournament", "Exodar Champion", "Alliance Argent Tournament faction mount." },
+  { "Exodar Elekk", 45590, 63639, "Exodar", "Exodar Quartermaster", "Argent Tournament", "Exodar Champion", "Alliance Argent Tournament faction mount." },
+
+  { "Swift Burgundy Wolf", 46749, 65646, "Orgrimmar", "Orgrimmar Quartermaster", "Argent Tournament", "Orgrimmar Champion", "Horde Argent Tournament faction mount." },
+  { "Orgrimmar Wolf", 45595, 63640, "Orgrimmar", "Orgrimmar Quartermaster", "Argent Tournament", "Orgrimmar Champion", "Horde Argent Tournament faction mount." },
+  { "Swift Purple Raptor", 46743, 65644, "Darkspear Trolls", "Darkspear Quartermaster", "Argent Tournament", "Darkspear Champion", "Horde Argent Tournament faction mount." },
+  { "Darkspear Raptor", 45593, 63635, "Darkspear Trolls", "Darkspear Quartermaster", "Argent Tournament", "Darkspear Champion", "Horde Argent Tournament faction mount." },
+  { "Great Golden Kodo", 46750, 65641, "Thunder Bluff", "Thunder Bluff Quartermaster", "Argent Tournament", "Thunder Bluff Champion", "Horde Argent Tournament faction mount." },
+  { "Thunder Bluff Kodo", 45592, 63641, "Thunder Bluff", "Thunder Bluff Quartermaster", "Argent Tournament", "Thunder Bluff Champion", "Horde Argent Tournament faction mount." },
+  { "White Skeletal Warhorse", 46746, 65645, "Undercity", "Undercity Quartermaster", "Argent Tournament", "Undercity Champion", "Horde Argent Tournament faction mount." },
+  { "Forsaken Warhorse", 45597, 63643, "Undercity", "Undercity Quartermaster", "Argent Tournament", "Undercity Champion", "Horde Argent Tournament faction mount." },
+  { "Swift Red Hawkstrider", 46751, 65639, "Silvermoon", "Silvermoon Quartermaster", "Argent Tournament", "Silvermoon Champion", "Horde Argent Tournament faction mount." },
+  { "Silvermoon Hawkstrider", 45596, 63642, "Silvermoon", "Silvermoon Quartermaster", "Argent Tournament", "Silvermoon Champion", "Horde Argent Tournament faction mount." },
+
+  { "Quel'dorei Steed", 46815, 66090, "The Silver Covenant", "The Silver Covenant", "Argent Tournament", "Exalted Champion of the Alliance", "Alliance Argent Tournament reward." },
+  { "Silver Covenant Hippogryph", 46813, 66087, "The Silver Covenant", "The Silver Covenant", "Argent Tournament", "Exalted Champion of the Alliance", "Alliance Argent Tournament reward." },
+  { "Sunreaver Hawkstrider", 46816, 66091, "The Sunreavers", "The Sunreavers", "Argent Tournament", "Exalted Champion of the Horde", "Horde Argent Tournament reward." },
+  { "Sunreaver Dragonhawk", 46814, 66088, "The Sunreavers", "The Sunreavers", "Argent Tournament", "Exalted Champion of the Horde", "Horde Argent Tournament reward." },
+  { "Argent Warhorse", 47180, 67466, "Argent Crusade", "Dame Evniki Kapsalis", "Argent Tournament", "Crusader title", "Argent Tournament Crusader reward." },
+  { "Argent Hippogryph", 45725, 63844, "Argent Crusade", "Dame Evniki Kapsalis", "Argent Tournament", "Crusader title", "Argent Tournament Crusader reward." },
+  { "Argent Charger", 47179, 66906, "Argent Crusade", "Dame Evniki Kapsalis", "Argent Tournament", "Paladin and Crusader title", "Paladin-only Argent Tournament Crusader reward." }
+}
+
+for _, mount in ipairs(wrathReputationMounts) do
+  MountAtlasAddWrathReputationMount(
+    mount[1],
+    mount[2],
+    mount[3],
+    mount[4],
+    mount[5],
+    mount[6],
+    mount[7],
+    mount[8]
+  )
+end
+
+MountAtlasAchievements = {
   -- Wrath of the Lich King
   {
     id = 2136,
@@ -1955,10 +2039,106 @@ AzerColectAchievements = {
   },
 }
 
-AzerColectLocationGuide = {
+MountAtlasLocationGuide = {
   -- Central location guide.
   -- Per-mount fields still win: coordinates/respawn/macro/tomtom on a mount override these shared entries.
   -- coordinates are shown in the guide; waypointZone is the outdoor map used by TomTom.
+  mounts = {
+    [237] = {
+      location = "Brunnhildar Village",
+      questStart = "Gretta the Arbiter",
+      waypointZone = "The Storm Peaks",
+      coordinates = "50.8, 65.6",
+      guideUrl = "https://www.wowhead.com/item=43962/reins-of-the-white-polar-bear",
+      note = "Unlock the Brunnhildar Village daily quests and open Hyldnir Spoils."
+    },
+    [838] = {
+      location = "Kosumoth the Hungering",
+      questStart = "Kosumoth orb secret",
+      waypointZone = "Eye of Azshara",
+      coordinates = "46.0, 49.0",
+      guideUrl = "https://www.wowhead.com/npc=111573/kosumoth-the-hungering",
+      respawn = "Active world quest",
+      macro = "/target Kosumoth the Hungering",
+      note = "Requires the orb secret before the world quest can reward the mount."
+    },
+    [1545] = {
+      location = "Ohn'iri Springs",
+      questStart = "Godoloto",
+      waypointZone = "Ohn'ahran Plains",
+      coordinates = "56.5, 73.3",
+      guideUrl = "https://www.wowhead.com/search?q=Divine%20Kiss%20of%20Ohn%27ahra",
+      note = "Special Maruuk Centaur questline; check renown and material requirements before going."
+    },
+    [2144] = {
+      location = "Delver's Headquarters",
+      questStart = "Ship It! / Delves introduction",
+      waypointZone = "Dornogal",
+      coordinates = "47.6, 44.4",
+      guideUrl = "https://www.wowhead.com/search?q=Delver%27s%20Dirigible%20Ship%20It",
+      note = "Complete the Delves introduction until you receive the customizable mount."
+    },
+    [2222] = {
+      location = "Tka'ktath",
+      questStart = "Vial of Tka'ktath's Blood drop from Tka'ktath",
+      waypointZone = "Azj-Kahet",
+      coordinates = "62.8, 66.2",
+      guideUrl = "https://www.wowhead.com/search?q=Siesbarg%20Tka%27ktath",
+      macro = "/target Tka'ktath",
+      note = "The questline and grind starts from Tka'ktath's rare drop."
+    },
+    ["Arcanist's Manasaber"] = {
+      location = "Shal'Aran cave entrance",
+      questStart = "Oculeth / Fate of the Nightborne",
+      waypointZone = "Suramar",
+      coordinates = "34.8, 48.1",
+      questID = 45372,
+      guideUrl = "https://www.wowhead.com/quest=45372/fate-of-the-nightborne",
+      note = "Complete Insurrection and the final Suramar chapter to claim the mount."
+    },
+    ["Archmage's Prismatic Disc"] = {
+      location = "Deliverance Point",
+      questStart = "Invoker Threadgold",
+      waypointZone = "Broken Shore",
+      coordinates = "44.5, 63.0",
+      questID = 45844,
+      guideUrl = "https://www.wowhead.com/guide/obtaining-legion-class-mounts-4944",
+      note = "Mage class mount; requires Legionfall and class campaign progress."
+    },
+    ["Azure Cloud Serpent"] = {
+      location = "The Arboretum",
+      questStart = "Order of the Cloud Serpent",
+      waypointZone = "The Jade Forest",
+      coordinates = "57.6, 45.0",
+      questID = 30188,
+      guideUrl = "https://www.wowhead.com/quest=30188/riding-the-skies",
+      note = "Raise Order of the Cloud Serpent reputation and complete Riding the Skies."
+    },
+    ["Azure Netherwing Drake"] = {
+      location = "Netherwing Fields",
+      questStart = "Mordenai",
+      waypointZone = "Shadowmoon Valley",
+      coordinates = "59.8, 58.6",
+      guideUrl = "https://www.wowhead.com/faction=1015/netherwing",
+      note = "Start the Netherwing chain with Mordenai, unlock dailies, and reach exalted."
+    },
+    ["Ban-Lu, Grandmaster's Companion"] = {
+      location = "Deliverance Point",
+      questStart = "Monk class mount starter",
+      waypointZone = "Broken Shore",
+      coordinates = "44.5, 63.0",
+      guideUrl = "https://www.wowhead.com/guide/obtaining-legion-class-mounts-4944",
+      note = "Monk class mount; the chain ends with Trial of Ban-Lu."
+    },
+    ["Battlelord's Bloodthirsty War Wyrm"] = {
+      location = "Deliverance Point",
+      questStart = "Warrior class mount starter",
+      waypointZone = "Broken Shore",
+      coordinates = "44.5, 63.0",
+      guideUrl = "https://www.wowhead.com/guide/obtaining-legion-class-mounts-4944",
+      note = "Warrior class mount; the chain ends with The Trial of Rage."
+    }
+  },
   zones = {
     ["Stratholme"] = { location = "Entrada de servicio", waypointZone = "Eastern Plaguelands", coordinates = "43.7, 19.4" },
     ["Sethekk Halls"] = { location = "Entrada de instancia", waypointZone = "Terokkar Forest", coordinates = "44.8, 65.6" },
@@ -2037,14 +2217,14 @@ AzerColectLocationGuide = {
   }
 }
 
-AzerColectDisabledExpansions = {}
+MountAtlasDisabledExpansions = {}
 
-AzerColectAutoCatalog = {
+MountAtlasAutoCatalog = {
   enabled = true,
   includeExternal = false
 }
 
-local function AzerColectBuildDisabledMountIDs(...)
+local function MountAtlasBuildDisabledMountIDs(...)
   local disabledMountIDs = {}
 
   for listIndex = 1, select("#", ...) do
@@ -2052,7 +2232,7 @@ local function AzerColectBuildDisabledMountIDs(...)
 
     for _, entry in ipairs(list or {}) do
       if entry.expansion
-        and AzerColectDisabledExpansions[entry.expansion]
+        and MountAtlasDisabledExpansions[entry.expansion]
         and entry.mountID
         and entry.mountID ~= 0 then
         disabledMountIDs[entry.mountID] = true
@@ -2063,11 +2243,11 @@ local function AzerColectBuildDisabledMountIDs(...)
   return disabledMountIDs
 end
 
-local function AzerColectFilterDisabledExpansions(list)
+local function MountAtlasFilterDisabledExpansions(list)
   local filtered = {}
 
   for _, entry in ipairs(list or {}) do
-    if not (entry.expansion and AzerColectDisabledExpansions[entry.expansion]) then
+    if not (entry.expansion and MountAtlasDisabledExpansions[entry.expansion]) then
       table.insert(filtered, entry)
     end
   end
@@ -2075,6 +2255,6 @@ local function AzerColectFilterDisabledExpansions(list)
   return filtered
 end
 
-AzerColectDisabledMountIDs = AzerColectBuildDisabledMountIDs(AzerColectMounts, AzerColectAchievements)
-AzerColectMounts = AzerColectFilterDisabledExpansions(AzerColectMounts)
-AzerColectAchievements = AzerColectFilterDisabledExpansions(AzerColectAchievements)
+MountAtlasDisabledMountIDs = MountAtlasBuildDisabledMountIDs(MountAtlasMounts, MountAtlasAchievements)
+MountAtlasMounts = MountAtlasFilterDisabledExpansions(MountAtlasMounts)
+MountAtlasAchievements = MountAtlasFilterDisabledExpansions(MountAtlasAchievements)

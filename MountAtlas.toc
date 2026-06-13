@@ -2,9 +2,9 @@
 ## Title: MountAtlas
 ## Notes: Discover what mounts you can farm today.
 ## IconTexture: Interface\AddOns\MountAtlas\Textures\MountAtlas.tga
-## Author: AlexGDM
-## Version: 1.0.0
-## SavedVariables: AzerColectDB
+## Author: Alex
+## Version: 1.1.0
+## SavedVariables: MountAtlasDB
 
 Data.lua
 Locales.lua

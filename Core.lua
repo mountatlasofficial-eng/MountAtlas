@@ -1,4 +1,11 @@
-AzerColectDB = type(AzerColectDB) == "table" and AzerColectDB or {}
+local legacyDatabaseName = string.char(65, 122, 101, 114, 67, 111, 108, 101, 99, 116, 68, 66)
+local legacyDatabase = _G[legacyDatabaseName]
+local shouldUseLegacyDatabase = type(legacyDatabase) == "table"
+  and next(legacyDatabase) ~= nil
+  and (type(MountAtlasDB) ~= "table" or next(MountAtlasDB) == nil)
+
+MountAtlasDB = shouldUseLegacyDatabase and legacyDatabase or (type(MountAtlasDB) == "table" and MountAtlasDB or {})
+_G[legacyDatabaseName] = nil
 
 local addon = CreateFrame("Frame")
 addon:RegisterEvent("PLAYER_LOGIN")
@@ -10,9 +17,9 @@ local ADDON_DISPLAY_NAME = "MountAtlas"
 local ROW_COUNT = 6
 local FRAME_WIDTH = 1240
 local FRAME_HEIGHT = 620
-local SIDEBAR_WIDTH = 184
-local CONTENT_LEFT = 220
-local ROW_WIDTH = 640
+local SIDEBAR_WIDTH = 158
+local CONTENT_LEFT = 190
+local ROW_WIDTH = 670
 local ROW_HEIGHT = 58
 local ROW_GAP = 7
 local LIST_TOP = -188
@@ -21,7 +28,10 @@ local PREVIEW_HEIGHT = 388
 local PRIORITY_RECOMMENDATION_COUNT = 3
 local DEFAULT_MOUNT_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local DEFAULT_ACHIEVEMENT_ICON = "Interface\\Icons\\Achievement_General"
-local MINIMAP_ICON_TEXTURE = "Interface\\AddOns\\AzerColect\\Textures\\MountAtlas"
+local MINIMAP_ICON_TEXTURE = "Interface\\AddOns\\MountAtlas\\Textures\\MountAtlas"
+local MINIMAP_BUTTON_SIZE = 34
+local MINIMAP_BUTTON_ICON_SIZE = 22
+local MINIMAP_BUTTON_OUTER_OFFSET = 10
 local ACTION_ICON_DONE = "Interface\\Buttons\\UI-CheckBox-Check"
 local ACTION_ICON_CLEAR = "Interface\\Buttons\\UI-GroupLoot-Pass-Up"
 local ACTION_ICON_FAVORITE = "Interface\\COMMON\\ReputationStar"
@@ -29,6 +39,7 @@ local ACTION_ICON_VIEW = "Interface\\Buttons\\UI-GuildButton-PublicNote-Up"
 local READABILITY_FONT_BONUS = 2
 local NEW_MOUNT_ALERT_DURATION = 7
 local DAILY_ROUTE_LIMIT = 5
+local PREVIEW_DETAILS_SCROLL_STEP = 28
 local AUTO_CATALOG_BATCH_SIZE = 12
 local AUTO_CATALOG_BATCH_DELAY = 0.02
 local currentMode = "today"
@@ -58,21 +69,15 @@ local function Print(msg)
 end
 
 local function L(key, ...)
-  if AzerColectText then
-    return AzerColectText(key, ...)
+  if MountAtlasText then
+    return MountAtlasText(key, ...)
   end
 
   return key
 end
 
 RegisterSlashCommands = function()
-  SLASH_AZERCOLECT1 = "/azer"
-  SLASH_AZERCOLECT2 = "/azercolect"
-  SLASH_AZERCOLECT3 = "/azercollect"
-  SLASH_AZERCOLECT4 = "/mountatlas"
-  SLASH_AZERCOLECT5 = "/mounts"
-  SLASH_AZERCOLECT6 = "/ma"
-  SlashCmdList["AZERCOLECT"] = function(msg)
+  local function runCommand(msg)
     if HandleSlashCommand then
       return HandleSlashCommand(msg)
     end
@@ -80,17 +85,22 @@ RegisterSlashCommands = function()
     Print("debug: " .. ADDON_REVISION .. ", slash registrado, Core.lua no termino de cargar.")
   end
 
-  SLASH_AZERCOLECTMINIMAP1 = "/azermini"
-  SLASH_AZERCOLECTMINIMAP2 = "/azerminimap"
-  SLASH_AZERCOLECTMINIMAP3 = "/azericono"
-  SLASH_AZERCOLECTMINIMAP4 = "/mountatlasmini"
-  SlashCmdList["AZERCOLECTMINIMAP"] = function()
+  SLASH_MOUNTATLAS1 = "/mountatlas"
+  SLASH_MOUNTATLAS2 = "/ma"
+  SLASH_MOUNTATLAS3 = "/mounts"
+  SlashCmdList["MOUNTATLAS"] = runCommand
+
+  local function runMinimapCommand()
     if RestoreMinimapButton then
       return RestoreMinimapButton()
     end
 
     Print("debug: " .. ADDON_REVISION .. ", minimapa aun no disponible.")
   end
+
+  SLASH_MOUNTATLASMINIMAP1 = "/mountatlasmini"
+  SLASH_MOUNTATLASMINIMAP2 = "/mountatlasminimap"
+  SlashCmdList["MOUNTATLASMINIMAP"] = runMinimapCommand
 end
 
 RegisterSlashCommands()
@@ -226,16 +236,16 @@ local currentExpansionFilter = "all"
 local currentSourceFilter = "all"
 local currentCollectionFilter = "missing"
 local currentSearchText = ""
-AzerColectRuntime = AzerColectRuntime or {
+MountAtlasRuntime = MountAtlasRuntime or {
   cacheRevision = 0,
   lastCharacterSnapshotAt = 0,
   CHARACTER_SNAPSHOT_THROTTLE = 8,
   SEARCH_REFRESH_DELAY = 0.15
 }
-AzerColectRuntime.cacheRevision = AzerColectRuntime.cacheRevision or 0
-AzerColectRuntime.lastCharacterSnapshotAt = AzerColectRuntime.lastCharacterSnapshotAt or 0
-AzerColectRuntime.CHARACTER_SNAPSHOT_THROTTLE = AzerColectRuntime.CHARACTER_SNAPSHOT_THROTTLE or 8
-AzerColectRuntime.SEARCH_REFRESH_DELAY = AzerColectRuntime.SEARCH_REFRESH_DELAY or 0.15
+MountAtlasRuntime.cacheRevision = MountAtlasRuntime.cacheRevision or 0
+MountAtlasRuntime.lastCharacterSnapshotAt = MountAtlasRuntime.lastCharacterSnapshotAt or 0
+MountAtlasRuntime.CHARACTER_SNAPSHOT_THROTTLE = MountAtlasRuntime.CHARACTER_SNAPSHOT_THROTTLE or 8
+MountAtlasRuntime.SEARCH_REFRESH_DELAY = MountAtlasRuntime.SEARCH_REFRESH_DELAY or 0.15
 local autoCatalogLoaded = false
 local autoCatalogAdded = 0
 
@@ -306,38 +316,39 @@ local PROFESSION_ALIASES = {
   }
 }
 
-function InvalidateAzerColectDataCache()
-  AzerColectRuntime.cacheRevision = AzerColectRuntime.cacheRevision + 1
-  AzerColectRuntime.itemListCacheKey = nil
-  AzerColectRuntime.itemListCacheItems = nil
-  AzerColectRuntime.itemListCacheEmptyText = nil
-  AzerColectRuntime.collectionStatsCacheRevision = nil
-  AzerColectRuntime.collectionStatsCache = nil
-  AzerColectRuntime.expansionProgressCacheRevision = nil
-  AzerColectRuntime.expansionProgressOrdered = nil
-  AzerColectRuntime.expansionProgressStats = nil
-  AzerColectRuntime.priorityPlanCacheKey = nil
-  AzerColectRuntime.priorityPlanCache = nil
+function InvalidateMountAtlasDataCache()
+  MountAtlasRuntime.cacheRevision = MountAtlasRuntime.cacheRevision + 1
+  MountAtlasRuntime.itemListCacheKey = nil
+  MountAtlasRuntime.itemListCacheItems = nil
+  MountAtlasRuntime.itemListCacheEmptyText = nil
+  MountAtlasRuntime.collectionStatsCacheRevision = nil
+  MountAtlasRuntime.collectionStatsCache = nil
+  MountAtlasRuntime.expansionProgressCacheRevision = nil
+  MountAtlasRuntime.expansionProgressOrdered = nil
+  MountAtlasRuntime.expansionProgressStats = nil
+  MountAtlasRuntime.priorityPlanCacheKey = nil
+  MountAtlasRuntime.priorityPlanCache = nil
 end
 
 function InvalidateMountJournalCaches()
   autoCatalogLoaded = false
   autoCatalogAdded = 0
-  AzerColectRuntime.autoCatalogLoading = nil
-  AzerColectRuntime.autoCatalogMountIDs = nil
-  AzerColectRuntime.autoCatalogConfiguredMountIDs = nil
-  AzerColectRuntime.autoCatalogIndex = nil
-  AzerColectRuntime.mountJournalNameCache = nil
-  AzerColectRuntime.collectedMountNameCache = nil
-  AzerColectRuntime.collectedMountIDCache = nil
-  AzerColectRuntime.mountDisplayNameCache = nil
-  AzerColectRuntime.mountIconCache = nil
-  AzerColectRuntime.mountDisplayIDCache = nil
-  AzerColectRuntime.journalMountInfoCache = nil
-  AzerColectRuntime.journalMountExtraCache = nil
-  AzerColectRuntime.mountSearchTextCache = nil
-  AzerColectRuntime.unavailableReasonCache = nil
-  InvalidateAzerColectDataCache()
+  MountAtlasRuntime.autoCatalogLoading = nil
+  MountAtlasRuntime.autoCatalogMountIDs = nil
+  MountAtlasRuntime.autoCatalogConfiguredMountIDs = nil
+  MountAtlasRuntime.autoCatalogIndex = nil
+  MountAtlasRuntime.mountJournalNameCache = nil
+  MountAtlasRuntime.mountJournalSpellCache = nil
+  MountAtlasRuntime.collectedMountNameCache = nil
+  MountAtlasRuntime.collectedMountIDCache = nil
+  MountAtlasRuntime.mountDisplayNameCache = nil
+  MountAtlasRuntime.mountIconCache = nil
+  MountAtlasRuntime.mountDisplayIDCache = nil
+  MountAtlasRuntime.journalMountInfoCache = nil
+  MountAtlasRuntime.journalMountExtraCache = nil
+  MountAtlasRuntime.mountSearchTextCache = nil
+  MountAtlasRuntime.unavailableReasonCache = nil
+  InvalidateMountAtlasDataCache()
 end
 
 function QueueRefreshWindow(delay)
@@ -345,41 +356,41 @@ function QueueRefreshWindow(delay)
     return
   end
 
-  if AzerColectRuntime.refreshQueued then
+  if MountAtlasRuntime.refreshQueued then
     return
   end
 
-  AzerColectRuntime.refreshQueued = true
+  MountAtlasRuntime.refreshQueued = true
 
   if C_Timer and C_Timer.After then
     C_Timer.After(delay or 0.05, function()
-      AzerColectRuntime.refreshQueued = false
+      MountAtlasRuntime.refreshQueued = false
 
       if mainFrame and mainFrame:IsShown() and RefreshWindow then
         RefreshWindow()
       end
     end)
   else
-    AzerColectRuntime.refreshQueued = false
+    MountAtlasRuntime.refreshQueued = false
     RefreshWindow()
   end
 end
 
 function ScheduleCharacterSnapshot(delay)
-  if AzerColectRuntime.snapshotQueued then
+  if MountAtlasRuntime.snapshotQueued then
     return
   end
 
-  AzerColectRuntime.snapshotQueued = true
+  MountAtlasRuntime.snapshotQueued = true
 
   if C_Timer and C_Timer.After then
     C_Timer.After(delay or 5, function()
-      AzerColectRuntime.snapshotQueued = false
+      MountAtlasRuntime.snapshotQueued = false
       UpdateCurrentCharacterSnapshot(true)
       QueueRefreshWindow(0.05)
     end)
   else
-    AzerColectRuntime.snapshotQueued = false
+    MountAtlasRuntime.snapshotQueued = false
     UpdateCurrentCharacterSnapshot(true)
   end
 end
@@ -448,6 +459,63 @@ local zoneExpansionMap = {
   ["Ciudadela de la Corona de Hielo"] = "Wrath",
   ["Eastern Kingdoms"] = "Classic",
   ["Kalimdor"] = "Classic",
+  ["Elwynn Forest"] = "Classic",
+  ["Dun Morogh"] = "Classic",
+  ["Teldrassil"] = "Classic",
+  ["Azuremyst Isle"] = "Burning Crusade",
+  ["Durotar"] = "Classic",
+  ["Mulgore"] = "Classic",
+  ["Tirisfal Glades"] = "Classic",
+  ["Eversong Woods"] = "Burning Crusade",
+  ["Stormwind City"] = "Classic",
+  ["Ciudad de Ventormenta"] = "Classic",
+  ["Ironforge"] = "Classic",
+  ["Forjaz"] = "Classic",
+  ["Darnassus"] = "Classic",
+  ["The Exodar"] = "Burning Crusade",
+  ["El Exodar"] = "Burning Crusade",
+  ["Orgrimmar"] = "Classic",
+  ["Thunder Bluff"] = "Classic",
+  ["Cima del Trueno"] = "Classic",
+  ["Undercity"] = "Classic",
+  ["Entranas"] = "Classic",
+  ["Silvermoon City"] = "Burning Crusade",
+  ["Ciudad de Lunargenta"] = "Burning Crusade",
+  ["Lunargenta"] = "Burning Crusade",
+  ["Winterspring"] = "Classic",
+  ["Cuna del Invierno"] = "Classic",
+  ["Tanaris"] = "Classic",
+  ["Un'Goro Crater"] = "Classic",
+  ["Crater de Un'Goro"] = "Classic",
+  ["Silithus"] = "Classic",
+  ["Hillsbrad Foothills"] = "Classic",
+  ["Laderas de Trabalomas"] = "Classic",
+  ["Arathi Highlands"] = "Classic",
+  ["Tierras Altas de Arathi"] = "Classic",
+  ["Ashenvale"] = "Classic",
+  ["Vallefresno"] = "Classic",
+  ["Feralas"] = "Classic",
+  ["Felwood"] = "Classic",
+  ["Frondavil"] = "Classic",
+  ["Western Plaguelands"] = "Classic",
+  ["Tierras de la Peste del Oeste"] = "Classic",
+  ["Eastern Plaguelands"] = "Classic",
+  ["Tierras de la Peste del Este"] = "Classic",
+  ["Darkshore"] = "Classic",
+  ["Costa Oscura"] = "Classic",
+  ["Northern Barrens"] = "Classic",
+  ["Los Baldios del Norte"] = "Classic",
+  ["Southern Barrens"] = "Classic",
+  ["Los Baldios del Sur"] = "Classic",
+  ["Stonetalon Mountains"] = "Classic",
+  ["Sierra Espolon"] = "Classic",
+  ["Desolace"] = "Classic",
+  ["Dustwallow Marsh"] = "Classic",
+  ["Marjal Revolcafango"] = "Classic",
+  ["Swamp of Sorrows"] = "Classic",
+  ["Pantano de las Penas"] = "Classic",
+  ["Blasted Lands"] = "Classic",
+  ["Las Tierras Devastadas"] = "Classic",
   ["Deepholm"] = "Cataclysm",
   ["Uldum"] = "Cataclysm",
   ["Mount Hyjal"] = "Cataclysm",
@@ -544,13 +612,251 @@ local zoneExpansionMap = {
   ["Nerub-ar Palace"] = "The War Within",
   ["Liberation of Undermine"] = "The War Within",
   ["Quel'Thalas"] = "Midnight",
-  ["Eversong Woods"] = "Midnight",
-  ["Silvermoon City"] = "Midnight",
   ["Harandar"] = "Midnight",
   ["Voidstorm"] = "Midnight",
   ["Midnight Delves"] = "Midnight",
   ["Midnight Dungeons"] = "Midnight",
   ["Midnight Raids"] = "Midnight"
+}
+
+local reputationExpansionMap = {
+  -- Classic city and faction reputations
+  ["Stormwind"] = "Classic",
+  ["Stormwind City"] = "Classic",
+  ["Ventormenta"] = "Classic",
+  ["Ironforge"] = "Classic",
+  ["Forjaz"] = "Classic",
+  ["Gnomeregan"] = "Classic",
+  ["Gnomeregan Exiles"] = "Classic",
+  ["Exiliados de Gnomeregan"] = "Classic",
+  ["Darnassus"] = "Classic",
+  ["Orgrimmar"] = "Classic",
+  ["Darkspear Trolls"] = "Classic",
+  ["Trolls Lanza Negra"] = "Classic",
+  ["Lanza Negra"] = "Classic",
+  ["Thunder Bluff"] = "Classic",
+  ["Cima del Trueno"] = "Classic",
+  ["Undercity"] = "Classic",
+  ["Entranas"] = "Classic",
+  ["Wintersaber Trainers"] = "Classic",
+  ["Instructores de Sableinvernales"] = "Classic",
+  ["Timbermaw Hold"] = "Classic",
+  ["Bastion Fauces de Madera"] = "Classic",
+  ["Thorium Brotherhood"] = "Classic",
+  ["Hermandad del Torio"] = "Classic",
+  ["Cenarion Circle"] = "Classic",
+  ["Circulo Cenarion"] = "Classic",
+
+  -- Burning Crusade
+  ["The Exodar"] = "Burning Crusade",
+  ["Exodar"] = "Burning Crusade",
+  ["El Exodar"] = "Burning Crusade",
+  ["Silvermoon City"] = "Burning Crusade",
+  ["Silvermoon"] = "Burning Crusade",
+  ["Ciudad de Lunargenta"] = "Burning Crusade",
+  ["Lunargenta"] = "Burning Crusade",
+  ["Kurenai"] = "Burning Crusade",
+  ["The Mag'har"] = "Burning Crusade",
+  ["Mag'har"] = "Burning Crusade",
+  ["Netherwing"] = "Burning Crusade",
+  ["Ala Abisal"] = "Burning Crusade",
+  ["Sha'tari Skyguard"] = "Burning Crusade",
+  ["Shatari Skyguard"] = "Burning Crusade",
+  ["Guardia del Cielo Sha'tari"] = "Burning Crusade",
+  ["Guardia del Cielo Shatari"] = "Burning Crusade",
+  ["Cenarion Expedition"] = "Burning Crusade",
+  ["Expedicion Cenarion"] = "Burning Crusade",
+  ["Sporeggar"] = "Burning Crusade",
+  ["The Consortium"] = "Burning Crusade",
+  ["El Consorcio"] = "Burning Crusade",
+
+  -- Wrath of the Lich King
+  ["The Kalu'ak"] = "Wrath",
+  ["Kalu'ak"] = "Wrath",
+  ["Los Kalu'ak"] = "Wrath",
+  ["Wyrmrest Accord"] = "Wrath",
+  ["El Acuerdo del Reposo del Dragon"] = "Wrath",
+  ["The Sons of Hodir"] = "Wrath",
+  ["Sons of Hodir"] = "Wrath",
+  ["Los Hijos de Hodir"] = "Wrath",
+  ["Argent Crusade"] = "Wrath",
+  ["Cruzada Argenta"] = "Wrath",
+  ["Argent Tournament"] = "Wrath",
+  ["Torneo Argenta"] = "Wrath",
+  ["The Silver Covenant"] = "Wrath",
+  ["Silver Covenant"] = "Wrath",
+  ["The Sunreavers"] = "Wrath",
+  ["Sunreavers"] = "Wrath",
+  ["Knights of the Ebon Blade"] = "Wrath",
+
+  -- Cataclysm
+  ["Gilneas"] = "Cataclysm",
+  ["Bilgewater Cartel"] = "Cataclysm",
+  ["Cartel Pantoque"] = "Cataclysm",
+  ["Ramkahen"] = "Cataclysm",
+  ["Baradin's Wardens"] = "Cataclysm",
+  ["Baradins Wardens"] = "Cataclysm",
+  ["Celadores de Baradin"] = "Cataclysm",
+  ["Hellscream's Reach"] = "Cataclysm",
+  ["Hellscreams Reach"] = "Cataclysm",
+  ["Avance de Grito Infernal"] = "Cataclysm",
+  ["Guardians of Hyjal"] = "Cataclysm",
+  ["Guardianes de Hyjal"] = "Cataclysm",
+  ["Wildhammer Clan"] = "Cataclysm",
+  ["Dragonmaw Clan"] = "Cataclysm",
+
+  -- Mists of Pandaria
+  ["Order of the Cloud Serpent"] = "Pandaria",
+  ["Orden del Dragon Nimbo"] = "Pandaria",
+  ["The Anglers"] = "Pandaria",
+  ["Anglers"] = "Pandaria",
+  ["Los Pescadores"] = "Pandaria",
+  ["The Tillers"] = "Pandaria",
+  ["Tillers"] = "Pandaria",
+  ["Los Labradores"] = "Pandaria",
+  ["Golden Lotus"] = "Pandaria",
+  ["Loto Dorado"] = "Pandaria",
+  ["Shado-Pan"] = "Pandaria",
+  ["Shado Pan"] = "Pandaria",
+  ["The August Celestials"] = "Pandaria",
+  ["August Celestials"] = "Pandaria",
+  ["Los Augustos Celestiales"] = "Pandaria",
+  ["The Klaxxi"] = "Pandaria",
+  ["Klaxxi"] = "Pandaria",
+  ["Emperor Shaohao"] = "Pandaria",
+  ["Emperador Shaohao"] = "Pandaria",
+  ["Operation: Shieldwall"] = "Pandaria",
+  ["Operation Shieldwall"] = "Pandaria",
+  ["Dominance Offensive"] = "Pandaria",
+  ["Kirin Tor Offensive"] = "Pandaria",
+  ["Sunreaver Onslaught"] = "Pandaria",
+
+  -- Warlords of Draenor
+  ["Council of Exarchs"] = "Draenor",
+  ["Consejo de Exarcas"] = "Draenor",
+  ["Frostwolf Orcs"] = "Draenor",
+  ["Orcos Lobo Gelido"] = "Draenor",
+  ["Sha'tari Defense"] = "Draenor",
+  ["Shatari Defense"] = "Draenor",
+  ["Laughing Skull Orcs"] = "Draenor",
+  ["Steamwheedle Preservation Society"] = "Draenor",
+  ["Arakkoa Outcasts"] = "Draenor",
+  ["Arakkoa desterrados"] = "Draenor",
+  ["Order of the Awakened"] = "Draenor",
+  ["Orden de los Despiertos"] = "Draenor",
+  ["The Saberstalkers"] = "Draenor",
+  ["Saberstalkers"] = "Draenor",
+  ["Vol'jin's Headhunters"] = "Draenor",
+  ["Voljins Headhunters"] = "Draenor",
+  ["Hand of the Prophet"] = "Draenor",
+  ["Wrynn's Vanguard"] = "Draenor",
+  ["Wrynns Vanguard"] = "Draenor",
+  ["Vol'jin's Spear"] = "Draenor",
+  ["Voljins Spear"] = "Draenor",
+
+  -- Legion
+  ["Court of Farondis"] = "Legion",
+  ["Dreamweavers"] = "Legion",
+  ["Tejesuenos"] = "Legion",
+  ["Highmountain Tribe"] = "Legion",
+  ["Tribu Monte Alto"] = "Legion",
+  ["The Nightfallen"] = "Legion",
+  ["Nightfallen"] = "Legion",
+  ["Caidos de la Noche"] = "Legion",
+  ["Valarjar"] = "Legion",
+  ["Armies of Legionfall"] = "Legion",
+  ["Ejercitos del Ocaso de la Legion"] = "Legion",
+  ["Army of the Light"] = "Legion",
+  ["Ejercito de la Luz"] = "Legion",
+  ["Argussian Reach"] = "Legion",
+  ["Gloria de Argus"] = "Legion",
+
+  -- Battle for Azeroth
+  ["Proudmoore Admiralty"] = "BFA",
+  ["Almirantazgo Valiente"] = "BFA",
+  ["Order of Embers"] = "BFA",
+  ["Orden de Ascuas"] = "BFA",
+  ["Storm's Wake"] = "BFA",
+  ["Storms Wake"] = "BFA",
+  ["Despertar de la Tormenta"] = "BFA",
+  ["7th Legion"] = "BFA",
+  ["VII Legion"] = "BFA",
+  ["The Honorbound"] = "BFA",
+  ["Honorbound"] = "BFA",
+  ["Defensores del Honor"] = "BFA",
+  ["Zandalari Empire"] = "BFA",
+  ["Imperio Zandalari"] = "BFA",
+  ["Talanji's Expedition"] = "BFA",
+  ["Talanjis Expedition"] = "BFA",
+  ["Expedicion de Talanji"] = "BFA",
+  ["Voldunai"] = "BFA",
+  ["Tortollan Seekers"] = "BFA",
+  ["Champions of Azeroth"] = "BFA",
+  ["Rustbolt Resistance"] = "BFA",
+  ["Resistencia de Pernooxido"] = "BFA",
+  ["Waveblade Ankoan"] = "BFA",
+  ["The Unshackled"] = "BFA",
+  ["Unshackled"] = "BFA",
+  ["Rajani"] = "BFA",
+  ["Uldum Accord"] = "BFA",
+  ["Honeyback Hive"] = "BFA",
+
+  -- Shadowlands
+  ["The Ascended"] = "Shadowlands",
+  ["Ascended"] = "Shadowlands",
+  ["Los Ascendidos"] = "Shadowlands",
+  ["The Wild Hunt"] = "Shadowlands",
+  ["Wild Hunt"] = "Shadowlands",
+  ["La Caceria Salvaje"] = "Shadowlands",
+  ["The Undying Army"] = "Shadowlands",
+  ["Undying Army"] = "Shadowlands",
+  ["El Ejercito Inmortal"] = "Shadowlands",
+  ["Court of Harvesters"] = "Shadowlands",
+  ["Corte de los Cosechadores"] = "Shadowlands",
+  ["Death's Advance"] = "Shadowlands",
+  ["Deaths Advance"] = "Shadowlands",
+  ["The Archivists' Codex"] = "Shadowlands",
+  ["Archivists Codex"] = "Shadowlands",
+  ["The Enlightened"] = "Shadowlands",
+  ["Enlightened"] = "Shadowlands",
+  ["Los Iluminados"] = "Shadowlands",
+  ["Marasmius"] = "Shadowlands",
+  ["Ve'nari"] = "Shadowlands",
+  ["Venari"] = "Shadowlands",
+
+  -- Dragonflight
+  ["Dragonscale Expedition"] = "Dragonflight",
+  ["Expedicion Dragontina"] = "Dragonflight",
+  ["Iskaara Tuskarr"] = "Dragonflight",
+  ["Colmillarr de Iskaara"] = "Dragonflight",
+  ["Maruuk Centaur"] = "Dragonflight",
+  ["Centauro Maruuk"] = "Dragonflight",
+  ["Valdrakken Accord"] = "Dragonflight",
+  ["Acuerdo de Valdrakken"] = "Dragonflight",
+  ["Loamm Niffen"] = "Dragonflight",
+  ["Niffen de Loamm"] = "Dragonflight",
+  ["Dream Wardens"] = "Dragonflight",
+  ["Celadores Oniricos"] = "Dragonflight",
+  ["Cobalt Assembly"] = "Dragonflight",
+  ["Winterpelt Furbolg"] = "Dragonflight",
+
+  -- The War Within
+  ["Council of Dornogal"] = "The War Within",
+  ["Consejo de Dornogal"] = "The War Within",
+  ["The Assembly of the Deeps"] = "The War Within",
+  ["Assembly of the Deeps"] = "The War Within",
+  ["Asamblea de las Profundidades"] = "The War Within",
+  ["Hallowfall Arathi"] = "The War Within",
+  ["Arathi de Santificacion"] = "The War Within",
+  ["The Severed Threads"] = "The War Within",
+  ["Severed Threads"] = "The War Within",
+  ["Los Hilos Cercenados"] = "The War Within",
+  ["The Cartels of Undermine"] = "The War Within",
+  ["Cartels of Undermine"] = "The War Within",
+  ["Los Carteles de Minahonda"] = "The War Within",
+  ["Gallagio Loyalty Rewards Club"] = "The War Within",
+  ["Flame's Radiance"] = "The War Within",
+  ["Flames Radiance"] = "The War Within"
 }
 
 function GetOptionLabel(options, value)
@@ -769,7 +1075,7 @@ function ExpansionMatches(expansion, filter)
 end
 
 function IsExpansionEnabled(expansion)
-  return not (AzerColectDisabledExpansions and AzerColectDisabledExpansions[expansion])
+  return not (MountAtlasDisabledExpansions and MountAtlasDisabledExpansions[expansion])
 end
 
 function SafeCall(fn, ...)
@@ -787,11 +1093,11 @@ function SafeCall(fn, ...)
 end
 
 function IsAutoCatalogEnabled()
-  return not (AzerColectAutoCatalog and AzerColectAutoCatalog.enabled == false)
+  return not (MountAtlasAutoCatalog and MountAtlasAutoCatalog.enabled == false)
 end
 
 function IsDisabledMountID(mountID)
-  return mountID and AzerColectDisabledMountIDs and AzerColectDisabledMountIDs[mountID] == true
+  return mountID and MountAtlasDisabledMountIDs and MountAtlasDisabledMountIDs[mountID] == true
 end
 
 function GetJournalMountInfo(mountID)
@@ -801,10 +1107,10 @@ function GetJournalMountInfo(mountID)
     return nil
   end
 
-  AzerColectRuntime.journalMountInfoCache = AzerColectRuntime.journalMountInfoCache or {}
+  MountAtlasRuntime.journalMountInfoCache = MountAtlasRuntime.journalMountInfoCache or {}
 
-  if AzerColectRuntime.journalMountInfoCache[mountID] then
-    return AzerColectRuntime.journalMountInfoCache[mountID]
+  if MountAtlasRuntime.journalMountInfoCache[mountID] then
+    return MountAtlasRuntime.journalMountInfoCache[mountID]
   end
 
   local name, spellID, icon, isActive, isUsable, sourceType,
@@ -815,7 +1121,7 @@ function GetJournalMountInfo(mountID)
     return nil
   end
 
-  AzerColectRuntime.journalMountInfoCache[mountID] = {
+  MountAtlasRuntime.journalMountInfoCache[mountID] = {
     name = name,
     spellID = spellID,
     icon = icon,
@@ -824,12 +1130,12 @@ function GetJournalMountInfo(mountID)
     shouldHideOnChar = shouldHideOnChar == true
   }
 
-  AzerColectRuntime.mountDisplayNameCache = AzerColectRuntime.mountDisplayNameCache or {}
-  AzerColectRuntime.mountIconCache = AzerColectRuntime.mountIconCache or {}
-  AzerColectRuntime.mountDisplayNameCache[mountID] = name
-  AzerColectRuntime.mountIconCache[mountID] = icon
+  MountAtlasRuntime.mountDisplayNameCache = MountAtlasRuntime.mountDisplayNameCache or {}
+  MountAtlasRuntime.mountIconCache = MountAtlasRuntime.mountIconCache or {}
+  MountAtlasRuntime.mountDisplayNameCache[mountID] = name
+  MountAtlasRuntime.mountIconCache[mountID] = icon
 
-  return AzerColectRuntime.journalMountInfoCache[mountID]
+  return MountAtlasRuntime.journalMountInfoCache[mountID]
 end
 
 function GetJournalMountExtra(mountID)
@@ -839,34 +1145,48 @@ function GetJournalMountExtra(mountID)
     return nil
   end
 
-  AzerColectRuntime.journalMountExtraCache = AzerColectRuntime.journalMountExtraCache or {}
+  MountAtlasRuntime.journalMountExtraCache = MountAtlasRuntime.journalMountExtraCache or {}
 
-  if AzerColectRuntime.journalMountExtraCache[mountID] then
-    return AzerColectRuntime.journalMountExtraCache[mountID]
+  if MountAtlasRuntime.journalMountExtraCache[mountID] then
+    return MountAtlasRuntime.journalMountExtraCache[mountID]
   end
 
   local displayID, description, sourceText = SafeCall(C_MountJournal.GetMountInfoExtraByID, mountID)
 
-  AzerColectRuntime.journalMountExtraCache[mountID] = {
+  MountAtlasRuntime.journalMountExtraCache[mountID] = {
     displayID = displayID,
     description = description,
     sourceText = sourceText
   }
 
   if type(displayID) == "number" and displayID > 0 then
-    AzerColectRuntime.mountDisplayIDCache = AzerColectRuntime.mountDisplayIDCache or {}
-    AzerColectRuntime.mountDisplayIDCache[mountID] = displayID
+    MountAtlasRuntime.mountDisplayIDCache = MountAtlasRuntime.mountDisplayIDCache or {}
+    MountAtlasRuntime.mountDisplayIDCache[mountID] = displayID
   end
 
-  return AzerColectRuntime.journalMountExtraCache[mountID]
+  return MountAtlasRuntime.journalMountExtraCache[mountID]
 end
 
 function BuildConfiguredMountIDSet()
   local mountIDs = {}
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
-    if type(mount) == "table" and mount.mountID and mount.mountID ~= 0 then
-      mountIDs[mount.mountID] = true
+  for _, mount in ipairs(MountAtlasMounts or {}) do
+    if type(mount) == "table" then
+      if mount.mountID and mount.mountID ~= 0 then
+        mountIDs[mount.mountID] = true
+      end
+
+      if mount.spellID or mount.mountSpellID or mount.spell then
+        local spellID = tonumber(mount.spellID or mount.mountSpellID or mount.spell)
+
+        if spellID and spellID ~= 0 then
+          mountIDs["spell:" .. spellID] = true
+        end
+      end
+
+      if mount.name and mount.name ~= "" then
+        mountIDs[Normalize(mount.name)] = true
+      end
     end
   end
 
@@ -880,8 +1200,8 @@ function SetEnumSourceType(sourceMap, enumTable, key, source)
 end
 
 function BuildJournalSourceTypeMap()
-  if AzerColectRuntime.journalSourceTypeMap then
-    return AzerColectRuntime.journalSourceTypeMap
+  if MountAtlasRuntime.journalSourceTypeMap then
+    return MountAtlasRuntime.journalSourceTypeMap
   end
 
   local sourceMap = {}
@@ -908,14 +1228,14 @@ function BuildJournalSourceTypeMap()
   SetEnumSourceType(sourceMap, enumTable, "TradingPost", "Vendor")
   SetEnumSourceType(sourceMap, enumTable, "Discovery", "Secret")
 
-  AzerColectRuntime.journalSourceTypeMap = sourceMap
+  MountAtlasRuntime.journalSourceTypeMap = sourceMap
 
   return sourceMap
 end
 
 function BuildExternalJournalSourceTypeSet()
-  if AzerColectRuntime.externalJournalSourceTypeSet then
-    return AzerColectRuntime.externalJournalSourceTypeSet
+  if MountAtlasRuntime.externalJournalSourceTypeSet then
+    return MountAtlasRuntime.externalJournalSourceTypeSet
   end
 
   local externalSourceTypes = {}
@@ -928,7 +1248,7 @@ function BuildExternalJournalSourceTypeSet()
   SetEnumSourceType(externalSourceTypes, enumTable, "Store", true)
   SetEnumSourceType(externalSourceTypes, enumTable, "NotAvailable", true)
 
-  AzerColectRuntime.externalJournalSourceTypeSet = externalSourceTypes
+  MountAtlasRuntime.externalJournalSourceTypeSet = externalSourceTypes
 
   return externalSourceTypes
 end
@@ -1012,21 +1332,89 @@ function GetMountProfession(mount)
 end
 
 function GetNormalizedZoneExpansionMap()
-  if AzerColectRuntime.normalizedZoneExpansionMap then
-    return AzerColectRuntime.normalizedZoneExpansionMap
+  if MountAtlasRuntime.normalizedZoneExpansionMap then
+    return MountAtlasRuntime.normalizedZoneExpansionMap
   end
 
-  AzerColectRuntime.normalizedZoneExpansionMap = {}
+  MountAtlasRuntime.normalizedZoneExpansionMap = {}
 
   for zone, expansion in pairs(zoneExpansionMap) do
-    AzerColectRuntime.normalizedZoneExpansionMap[Normalize(zone)] = expansion
+    MountAtlasRuntime.normalizedZoneExpansionMap[Normalize(zone)] = expansion
   end
 
-  return AzerColectRuntime.normalizedZoneExpansionMap
+  return MountAtlasRuntime.normalizedZoneExpansionMap
+end
+
+function GetNormalizedReputationExpansionMap()
+  if MountAtlasRuntime.normalizedReputationExpansionMap then
+    return MountAtlasRuntime.normalizedReputationExpansionMap
+  end
+
+  MountAtlasRuntime.normalizedReputationExpansionMap = {}
+
+  for reputation, expansion in pairs(reputationExpansionMap) do
+    MountAtlasRuntime.normalizedReputationExpansionMap[Normalize(reputation)] = expansion
+  end
+
+  return MountAtlasRuntime.normalizedReputationExpansionMap
+end
+
+function AppendExpansionContext(parts, value)
+  if value == nil then
+    return
+  end
+
+  local localized = type(LocalizeDataValue) == "function" and LocalizeDataValue(value) or value
+
+  if type(localized) == "table" then
+    for _, childValue in pairs(localized) do
+      AppendExpansionContext(parts, childValue)
+    end
+  elseif localized and localized ~= "" then
+    table.insert(parts, tostring(localized))
+  end
+end
+
+function BuildExpansionContextText(...)
+  local parts = {}
+
+  for index = 1, select("#", ...) do
+    AppendExpansionContext(parts, select(index, ...))
+  end
+
+  return Trim(table.concat(parts, " "))
+end
+
+function InferExpansionFromReputationText(...)
+  local cleanText = Normalize(BuildExpansionContextText(...))
+
+  if cleanText == "" then
+    return nil
+  end
+
+  for reputation, expansion in pairs(GetNormalizedReputationExpansionMap()) do
+    if reputation ~= "" and string.find(cleanText, reputation, 1, true) then
+      return expansion
+    end
+  end
+end
+
+function InferExpansionFromZoneText(...)
+  local cleanText = Normalize(BuildExpansionContextText(...))
+
+  if cleanText == "" then
+    return nil
+  end
+
+  for zone, expansion in pairs(GetNormalizedZoneExpansionMap()) do
+    if zone ~= "" and string.find(cleanText, zone, 1, true) then
+      return expansion
+    end
+  end
 end
 
 function IsExternalJournalMount(sourceType, sourceText)
-  if AzerColectAutoCatalog and AzerColectAutoCatalog.includeExternal == true then
+  if MountAtlasAutoCatalog and MountAtlasAutoCatalog.includeExternal == true then
     return false
   end
 
@@ -1133,7 +1521,8 @@ function InferJournalMountSource(sourceType, sourceText, mountName)
     return "Achievement"
   end
 
-  if TextContainsAny(sourceContext, "reputation", "reputacion", "reputacion", "renown", "renombre") then
+  if TextContainsAny(sourceContext, "reputation", "reputacion", "reputacion", "renown", "renombre")
+    or InferExpansionFromReputationText(sourceContext) then
     return "Reputation"
   end
 
@@ -1212,14 +1601,19 @@ function BuildJournalMountNote(sourceText, description)
   return L("journalCatalogNote")
 end
 
-function InferJournalMountExpansion(sourceText, description)
-  local text = Trim((sourceText or "") .. " " .. (description or ""))
+function InferJournalMountExpansion(sourceText, description, mountName)
+  local text = BuildExpansionContextText(sourceText, description, mountName)
 
   if text == "" then
     return "General"
   end
 
   local cleanText = Normalize(text)
+  local reputationExpansion = InferExpansionFromReputationText(sourceText, description, mountName)
+
+  if reputationExpansion then
+    return reputationExpansion
+  end
 
   if CleanTextContainsAny(cleanText, "midnight delves", "midnight dungeons", "midnight raids", "midnight season") then
     return "Midnight"
@@ -1265,10 +1659,10 @@ function InferJournalMountExpansion(sourceText, description)
     return "Burning Crusade"
   end
 
-  for zone, expansion in pairs(GetNormalizedZoneExpansionMap()) do
-    if string.find(cleanText, zone, 1, true) then
-      return expansion
-    end
+  local zoneExpansion = InferExpansionFromZoneText(sourceText, description, mountName)
+
+  if zoneExpansion then
+    return zoneExpansion
   end
 
   return "General"
@@ -1285,6 +1679,16 @@ function AddJournalMountCatalogEntry(configuredMountIDs, mountID)
   local name = info and info.name
 
   if not name or name == "" then
+    return false
+  end
+
+  if info and info.spellID and configuredMountIDs["spell:" .. tostring(info.spellID)] then
+    configuredMountIDs[mountID] = true
+    return false
+  end
+
+  if configuredMountIDs[Normalize(name)] then
+    configuredMountIDs[mountID] = true
     return false
   end
 
@@ -1308,12 +1712,12 @@ function AddJournalMountCatalogEntry(configuredMountIDs, mountID)
   local detectedProfession = DetectProfessionNameFromText((name or "") .. " " .. journalSource)
   local inferredSource = InferJournalMountSource(sourceType, journalSource, name)
 
-  AzerColectMounts = AzerColectMounts or {}
-  table.insert(AzerColectMounts, {
+  MountAtlasMounts = MountAtlasMounts or {}
+  table.insert(MountAtlasMounts, {
     name = name,
     mountID = mountID,
     source = inferredSource,
-    expansion = InferJournalMountExpansion(sourceText, description),
+    expansion = InferJournalMountExpansion(sourceText, description, name),
     reset = "catalog",
     journalSource = journalSource,
     sourceType = sourceType,
@@ -1321,9 +1725,9 @@ function AddJournalMountCatalogEntry(configuredMountIDs, mountID)
     autoCatalog = true
   })
 
-  if AzerColectRuntime.journalMountExtraCache and AzerColectRuntime.journalMountExtraCache[mountID] then
-    AzerColectRuntime.journalMountExtraCache[mountID].description = nil
-    AzerColectRuntime.journalMountExtraCache[mountID].sourceText = nil
+  if MountAtlasRuntime.journalMountExtraCache and MountAtlasRuntime.journalMountExtraCache[mountID] then
+    MountAtlasRuntime.journalMountExtraCache[mountID].description = nil
+    MountAtlasRuntime.journalMountExtraCache[mountID].sourceText = nil
   end
 
   configuredMountIDs[mountID] = true
@@ -1332,11 +1736,11 @@ end
 
 function FinishJournalMountCatalogLoad()
   autoCatalogLoaded = true
-  AzerColectRuntime.autoCatalogLoading = nil
-  AzerColectRuntime.autoCatalogMountIDs = nil
-  AzerColectRuntime.autoCatalogConfiguredMountIDs = nil
-  AzerColectRuntime.autoCatalogIndex = nil
-  InvalidateAzerColectDataCache()
+  MountAtlasRuntime.autoCatalogLoading = nil
+  MountAtlasRuntime.autoCatalogMountIDs = nil
+  MountAtlasRuntime.autoCatalogConfiguredMountIDs = nil
+  MountAtlasRuntime.autoCatalogIndex = nil
+  InvalidateMountAtlasDataCache()
 
   if mainFrame and mainFrame:IsShown() then
     QueueRefreshWindow(0.05)
@@ -1352,19 +1756,19 @@ function QueueJournalMountCatalogBatch()
 end
 
 function ProcessJournalMountCatalogBatch()
-  if autoCatalogLoaded or not AzerColectRuntime.autoCatalogLoading then
+  if autoCatalogLoaded or not MountAtlasRuntime.autoCatalogLoading then
     return
   end
 
-  local mountIDs = AzerColectRuntime.autoCatalogMountIDs
-  local configuredMountIDs = AzerColectRuntime.autoCatalogConfiguredMountIDs
+  local mountIDs = MountAtlasRuntime.autoCatalogMountIDs
+  local configuredMountIDs = MountAtlasRuntime.autoCatalogConfiguredMountIDs
 
   if type(mountIDs) ~= "table" or type(configuredMountIDs) ~= "table" then
     FinishJournalMountCatalogLoad()
     return
   end
 
-  local index = AzerColectRuntime.autoCatalogIndex or 1
+  local index = MountAtlasRuntime.autoCatalogIndex or 1
   local lastIndex = math.min(#mountIDs, index + AUTO_CATALOG_BATCH_SIZE - 1)
 
   while index <= lastIndex do
@@ -1375,7 +1779,7 @@ function ProcessJournalMountCatalogBatch()
     index = index + 1
   end
 
-  AzerColectRuntime.autoCatalogIndex = index
+  MountAtlasRuntime.autoCatalogIndex = index
 
   if index <= #mountIDs then
     QueueJournalMountCatalogBatch()
@@ -1389,7 +1793,7 @@ function AddJournalMountCatalog()
     return autoCatalogAdded
   end
 
-  if AzerColectRuntime.autoCatalogLoading then
+  if MountAtlasRuntime.autoCatalogLoading then
     return autoCatalogAdded
   end
 
@@ -1403,10 +1807,10 @@ function AddJournalMountCatalog()
     return autoCatalogAdded
   end
 
-  AzerColectRuntime.autoCatalogMountIDs = mountIDs
-  AzerColectRuntime.autoCatalogConfiguredMountIDs = BuildConfiguredMountIDSet()
-  AzerColectRuntime.autoCatalogIndex = 1
-  AzerColectRuntime.autoCatalogLoading = true
+  MountAtlasRuntime.autoCatalogMountIDs = mountIDs
+  MountAtlasRuntime.autoCatalogConfiguredMountIDs = BuildConfiguredMountIDSet()
+  MountAtlasRuntime.autoCatalogIndex = 1
+  MountAtlasRuntime.autoCatalogLoading = true
   autoCatalogAdded = 0
   QueueJournalMountCatalogBatch()
 
@@ -1633,57 +2037,57 @@ local function GetCharacterKey()
 end
 
 local function EnsureDB()
-  AzerColectDB.attempts = AzerColectDB.attempts or {}
-  AzerColectDB.favorites = AzerColectDB.favorites or {}
-  AzerColectDB.favorites.mounts = AzerColectDB.favorites.mounts or {}
-  AzerColectDB.favorites.achievements = AzerColectDB.favorites.achievements or {}
-  AzerColectDB.minimap = AzerColectDB.minimap or {}
-  AzerColectDB.minimap.angle = tonumber(AzerColectDB.minimap.angle) or 225
-  AzerColectDB.characters = AzerColectDB.characters or {}
-  AzerColectDB.knownMounts = AzerColectDB.knownMounts or {}
-  AzerColectDB.mountHistory = AzerColectDB.mountHistory or {}
-  AzerColectDB.newMountAlerts = AzerColectDB.newMountAlerts or {}
-  AzerColectDB.options = AzerColectDB.options or {}
+  MountAtlasDB.attempts = MountAtlasDB.attempts or {}
+  MountAtlasDB.favorites = MountAtlasDB.favorites or {}
+  MountAtlasDB.favorites.mounts = MountAtlasDB.favorites.mounts or {}
+  MountAtlasDB.favorites.achievements = MountAtlasDB.favorites.achievements or {}
+  MountAtlasDB.minimap = MountAtlasDB.minimap or {}
+  MountAtlasDB.minimap.angle = tonumber(MountAtlasDB.minimap.angle) or 225
+  MountAtlasDB.characters = MountAtlasDB.characters or {}
+  MountAtlasDB.knownMounts = MountAtlasDB.knownMounts or {}
+  MountAtlasDB.mountHistory = MountAtlasDB.mountHistory or {}
+  MountAtlasDB.newMountAlerts = MountAtlasDB.newMountAlerts or {}
+  MountAtlasDB.options = MountAtlasDB.options or {}
 
   for key, value in pairs(DEFAULT_OPTIONS) do
-    if AzerColectDB.options[key] == nil then
-      AzerColectDB.options[key] = value
+    if MountAtlasDB.options[key] == nil then
+      MountAtlasDB.options[key] = value
     end
   end
 
-  if AzerColectDB.newMountAlerts.enabled == nil then
-    AzerColectDB.newMountAlerts.enabled = true
+  if MountAtlasDB.newMountAlerts.enabled == nil then
+    MountAtlasDB.newMountAlerts.enabled = true
   end
 
-  if AzerColectDB.newMountAlerts.sound == nil then
-    AzerColectDB.newMountAlerts.sound = true
+  if MountAtlasDB.newMountAlerts.sound == nil then
+    MountAtlasDB.newMountAlerts.sound = true
   end
 
-  if AzerColectDB.newMountAlerts.confetti == nil then
-    AzerColectDB.newMountAlerts.confetti = true
+  if MountAtlasDB.newMountAlerts.confetti == nil then
+    MountAtlasDB.newMountAlerts.confetti = true
   end
 
   local characterKey = GetCharacterKey()
-  AzerColectDB.attempts[characterKey] = AzerColectDB.attempts[characterKey] or {}
-  AzerColectDB.characters[characterKey] = AzerColectDB.characters[characterKey] or {}
+  MountAtlasDB.attempts[characterKey] = MountAtlasDB.attempts[characterKey] or {}
+  MountAtlasDB.characters[characterKey] = MountAtlasDB.characters[characterKey] or {}
 
-  return AzerColectDB.attempts[characterKey]
+  return MountAtlasDB.attempts[characterKey]
 end
 
-function GetAzerColectOption(key)
+function GetMountAtlasOption(key)
   EnsureDB()
 
-  if AzerColectDB.options[key] == nil then
+  if MountAtlasDB.options[key] == nil then
     return DEFAULT_OPTIONS[key]
   end
 
-  return AzerColectDB.options[key] == true
+  return MountAtlasDB.options[key] == true
 end
 
-function SetAzerColectOption(key, value)
+function SetMountAtlasOption(key, value)
   EnsureDB()
-  AzerColectDB.options[key] = value == true
-  InvalidateAzerColectDataCache()
+  MountAtlasDB.options[key] = value == true
+  InvalidateMountAtlasDataCache()
 end
 
 local function GetResetGroup(reset)
@@ -1744,12 +2148,12 @@ local function GetMountKey(mount)
 end
 
 function GetUnavailableRegistryEntry(mount)
-  if type(mount) ~= "table" or type(AzerColectUnavailableMounts) ~= "table" then
+  if type(mount) ~= "table" or type(MountAtlasUnavailableMounts) ~= "table" then
     return nil
   end
 
   if mount.mountID then
-    local entry = AzerColectUnavailableMounts[mount.mountID] or AzerColectUnavailableMounts[tostring(mount.mountID)]
+    local entry = MountAtlasUnavailableMounts[mount.mountID] or MountAtlasUnavailableMounts[tostring(mount.mountID)]
 
     if entry then
       return entry
@@ -1759,7 +2163,7 @@ function GetUnavailableRegistryEntry(mount)
   local mountName = Normalize(mount.name or "")
 
   if mountName ~= "" then
-    for key, entry in pairs(AzerColectUnavailableMounts) do
+    for key, entry in pairs(MountAtlasUnavailableMounts) do
       if Normalize(tostring(key)) == mountName then
         return entry
       end
@@ -1776,10 +2180,10 @@ function GetMountUnavailableReason(mount)
     return nil
   end
 
-  AzerColectRuntime.unavailableReasonCache = AzerColectRuntime.unavailableReasonCache or {}
+  MountAtlasRuntime.unavailableReasonCache = MountAtlasRuntime.unavailableReasonCache or {}
 
   local key = GetMountKey(mount)
-  local cached = AzerColectRuntime.unavailableReasonCache[key]
+  local cached = MountAtlasRuntime.unavailableReasonCache[key]
 
   if cached ~= nil then
     return cached ~= false and cached or nil
@@ -1851,7 +2255,7 @@ function GetMountUnavailableReason(mount)
     end
   end
 
-  AzerColectRuntime.unavailableReasonCache[key] = reason or false
+  MountAtlasRuntime.unavailableReasonCache[key] = reason or false
 
   return reason
 end
@@ -1868,14 +2272,14 @@ function GetMountHistory(mount)
   EnsureDB()
 
   local key = GetMountKey(mount)
-  AzerColectDB.mountHistory[key] = AzerColectDB.mountHistory[key] or {
+  MountAtlasDB.mountHistory[key] = MountAtlasDB.mountHistory[key] or {
     name = mount.name,
     mountID = mount.mountID,
     attempts = 0,
     periods = {}
   }
 
-  local history = AzerColectDB.mountHistory[key]
+  local history = MountAtlasDB.mountHistory[key]
 
   history.name = mount.name or history.name
   history.mountID = mount.mountID or history.mountID
@@ -1916,13 +2320,13 @@ local function MarkAttempt(mount)
   }
 
   RecordMountAttemptHistory(mount)
-  InvalidateAzerColectDataCache()
+  InvalidateMountAtlasDataCache()
 end
 
 local function ClearAttempt(mount)
   local attempts = EnsureDB()
   attempts[GetMountKey(mount)] = nil
-  InvalidateAzerColectDataCache()
+  InvalidateMountAtlasDataCache()
 end
 
 local function IsAttempted(mount)
@@ -1935,7 +2339,7 @@ end
 local function EnsureFavorites()
   EnsureDB()
 
-  return AzerColectDB.favorites
+  return MountAtlasDB.favorites
 end
 
 local function GetAchievementID(entry)
@@ -1995,7 +2399,7 @@ local function ToggleFavoriteMount(mount)
     Print(L("favoriteAdded", GetMountDisplayName(mount)))
   end
 
-  InvalidateAzerColectDataCache()
+  InvalidateMountAtlasDataCache()
 end
 
 local function ToggleFavoriteAchievement(entry)
@@ -2015,7 +2419,7 @@ local function ToggleFavoriteAchievement(entry)
     Print(L("favoriteAdded", GetAchievementDisplayName(entry)))
   end
 
-  InvalidateAzerColectDataCache()
+  InvalidateMountAtlasDataCache()
 end
 
 local function ShouldShowMount(mount, mode)
@@ -2034,11 +2438,51 @@ local function ShouldShowMount(mount, mode)
 end
 
 local function GetMountExpansion(mount)
+  if type(mount) ~= "table" then
+    return "General"
+  end
+
   if mount.expansion and mount.expansion ~= "" then
     return mount.expansion
   end
 
-  return zoneExpansionMap[mount.zone or ""] or "General"
+  local zone = type(LocalizeDataValue) == "function" and LocalizeDataValue(mount.zone) or mount.zone
+  local zoneExpansion = zoneExpansionMap[zone or ""]
+    or InferExpansionFromZoneText(zone)
+
+  if zoneExpansion then
+    return zoneExpansion
+  end
+
+  local guide = type(GetMountLocationGuide) == "function" and GetMountLocationGuide(mount)
+
+  if type(guide) == "table" then
+    zoneExpansion = InferExpansionFromZoneText(guide.zone, guide.waypointZone, guide.mapZone)
+
+    if zoneExpansion then
+      return zoneExpansion
+    end
+  end
+
+  local reputationExpansion = InferExpansionFromReputationText(
+    mount.reputation,
+    mount.faction,
+    mount.renownFaction,
+    mount.requirement,
+    mount.requirements,
+    mount.note,
+    mount.journalSource,
+    mount.boss,
+    mount.vendor,
+    mount.name,
+    zone
+  )
+
+  if reputationExpansion then
+    return reputationExpansion
+  end
+
+  return "General"
 end
 
 local function GetMountSource(mount)
@@ -2602,12 +3046,14 @@ local function IsEventMountAvailable(mount)
   return IsNamedEventActive(eventName)
 end
 
+local GetMountGuideField
+
 local function GetMountRoute(mount)
   if type(mount) ~= "table" then
     return nil
   end
 
-  return FormatListValue(mount.route or mount.farmRoute or mount.routeSteps, " > ")
+  return FormatListValue(GetMountGuideField(mount, "route", "farmRoute", "routeSteps"), " > ")
 end
 
 local function GetMountMethod(mount)
@@ -2615,8 +3061,36 @@ local function GetMountMethod(mount)
     return nil
   end
 
-  return FormatListValue(mount.method or mount.acquireMethod or mount.acquisitionMethod, ", ")
+  return FormatListValue(GetMountGuideField(mount, "method", "acquireMethod", "acquisitionMethod"), ", ")
     or GetSourceDisplayName(GetMountSource(mount))
+end
+
+GetMountGuideField = function(mount, ...)
+  if type(mount) ~= "table" then
+    return nil
+  end
+
+  for index = 1, select("#", ...) do
+    local key = select(index, ...)
+
+    if key and mount[key] ~= nil and mount[key] ~= "" then
+      return mount[key]
+    end
+  end
+
+  local guide = GetMountLocationGuide and GetMountLocationGuide(mount)
+
+  if type(guide) ~= "table" then
+    return nil
+  end
+
+  for index = 1, select("#", ...) do
+    local key = select(index, ...)
+
+    if key and guide[key] ~= nil and guide[key] ~= "" then
+      return guide[key]
+    end
+  end
 end
 
 local function GetMountCoordinates(mount)
@@ -2666,13 +3140,13 @@ function FindLocationGuideEntry(entries, key)
 end
 
 function GetMountLocationGuide(mount)
-  if type(mount) ~= "table" or type(AzerColectLocationGuide) ~= "table" then
+  if type(mount) ~= "table" or type(MountAtlasLocationGuide) ~= "table" then
     return nil
   end
 
-  local mounts = AzerColectLocationGuide.mounts
-  local bosses = AzerColectLocationGuide.bosses
-  local zones = AzerColectLocationGuide.zones
+  local mounts = MountAtlasLocationGuide.mounts
+  local bosses = MountAtlasLocationGuide.bosses
+  local zones = MountAtlasLocationGuide.zones
   local entry
 
   if type(mounts) == "table" then
@@ -2818,6 +3292,164 @@ function GetMountWaypointInfo(mount)
   return zone, coordinates
 end
 
+local function GetMountDisplayZone(mount)
+  if type(mount) ~= "table" then
+    return nil
+  end
+
+  local zone = LocalizeDataValue(mount.zone)
+
+  if zone and zone ~= "" then
+    return zone
+  end
+
+  local guide = GetMountLocationGuide(mount)
+
+  if type(guide) == "table" then
+    return LocalizeDataValue(guide.zone or guide.waypointZone or guide.mapZone)
+  end
+end
+
+local function AddGuideQuestIDs(ids, seen, value)
+  if type(value) == "table" and not IsLocalizedDataTable(value) then
+    for _, questID in ipairs(value) do
+      local numericID = tonumber(questID)
+
+      if numericID and not seen[numericID] then
+        table.insert(ids, numericID)
+        seen[numericID] = true
+      end
+    end
+  else
+    local numericID = tonumber(value)
+
+    if numericID and not seen[numericID] then
+      table.insert(ids, numericID)
+      seen[numericID] = true
+    end
+  end
+end
+
+local function GetMountQuestIDList(mount)
+  local ids = {}
+  local seen = {}
+  local guide = GetMountLocationGuide(mount)
+
+  if type(mount) == "table" then
+    AddGuideQuestIDs(ids, seen, mount.startQuestID or mount.openingQuestID or mount.guideQuestID)
+    AddGuideQuestIDs(ids, seen, mount.questID)
+    AddGuideQuestIDs(ids, seen, mount.questIDs)
+    AddGuideQuestIDs(ids, seen, mount.requiredQuestIDs)
+    AddGuideQuestIDs(ids, seen, mount.campaignQuestIDs or mount.storyQuestIDs)
+  end
+
+  if type(guide) == "table" then
+    AddGuideQuestIDs(ids, seen, guide.startQuestID or guide.openingQuestID or guide.guideQuestID)
+    AddGuideQuestIDs(ids, seen, guide.questID)
+    AddGuideQuestIDs(ids, seen, guide.questIDs)
+    AddGuideQuestIDs(ids, seen, guide.requiredQuestIDs)
+    AddGuideQuestIDs(ids, seen, guide.campaignQuestIDs or guide.storyQuestIDs)
+  end
+
+  return ids
+end
+
+local function GetMountPrimaryQuestID(mount)
+  local ids = GetMountQuestIDList(mount)
+
+  return ids[1]
+end
+
+local function GetMountQuestIDsText(mount)
+  local ids = GetMountQuestIDList(mount)
+
+  if #ids == 0 then
+    return nil
+  end
+
+  local parts = {}
+
+  for _, questID in ipairs(ids) do
+    table.insert(parts, tostring(questID))
+  end
+
+  return table.concat(parts, ", ")
+end
+
+local function GetMountQuestStart(mount)
+  return FormatListValue(GetMountGuideField(mount,
+    "questStart",
+    "startQuest",
+    "startingQuest",
+    "startNPC",
+    "starter"), ", ")
+end
+
+local function UrlEncode(value)
+  value = tostring(value or ""):gsub("\n", " ")
+
+  return (value:gsub("([^%w%-_%.~])", function(character)
+    return string.format("%%%02X", string.byte(character))
+  end))
+end
+
+local function GetMountGuideURL(mount)
+  if type(mount) ~= "table" then
+    return nil
+  end
+
+  local explicitURL = FormatListValue(GetMountGuideField(mount,
+    "guideUrl",
+    "guideURL",
+    "wowheadUrl",
+    "wowheadURL",
+    "wowhead",
+    "url",
+    "link"), "\n")
+
+  if explicitURL and explicitURL ~= "" then
+    return explicitURL
+  end
+
+  local questID = GetMountPrimaryQuestID(mount)
+
+  if questID then
+    return "https://www.wowhead.com/quest=" .. questID
+  end
+
+  local itemID = tonumber(GetMountGuideField(mount, "itemID", "guideItemID", "rewardItemID"))
+
+  if itemID then
+    return "https://www.wowhead.com/item=" .. itemID
+  end
+
+  local spellID = tonumber(GetMountGuideField(mount, "spellID", "guideSpellID", "mountSpellID"))
+
+  if spellID then
+    return "https://www.wowhead.com/spell=" .. spellID
+  end
+
+  local name = GetMountDisplayName and GetMountDisplayName(mount)
+
+  if name and name ~= "" then
+    return "https://www.wowhead.com/search?q=" .. UrlEncode(name)
+  end
+end
+
+local function GetMountGuideLabel(mount)
+  if not GetMountGuideURL(mount) then
+    return nil
+  end
+
+  if GetMountPrimaryQuestID(mount)
+    or GetMountGuideField(mount, "guideUrl", "guideURL", "wowheadUrl", "wowheadURL", "wowhead", "url", "link")
+    or GetMountGuideField(mount, "itemID", "guideItemID", "rewardItemID", "spellID", "guideSpellID", "mountSpellID") then
+    return L("guideLinkValue")
+  end
+
+  return L("guideSearchLinkValue")
+end
+
 local function FormatGuideRequirement(requirement)
   if type(requirement) == "table" then
     if IsLocalizedDataTable(requirement) then
@@ -2868,10 +3500,12 @@ local function GetMountRequirementsText(mount)
     return nil
   end
 
-  if type(mount.requirements) == "table" and not IsLocalizedDataTable(mount.requirements) then
+  local requirements = GetMountGuideField(mount, "requirements")
+
+  if type(requirements) == "table" and not IsLocalizedDataTable(requirements) then
     local lines = {}
 
-    for _, requirement in ipairs(mount.requirements) do
+    for _, requirement in ipairs(requirements) do
       local line = FormatGuideRequirement(requirement)
 
       if line then
@@ -2884,7 +3518,7 @@ local function GetMountRequirementsText(mount)
     end
   end
 
-  local requirement = FormatListValue(mount.requirements or mount.requirement, "\n")
+  local requirement = FormatListValue(GetMountGuideField(mount, "requirements", "requirement"), "\n")
 
   if requirement then
     return FormatGuideRequirement(requirement)
@@ -2915,17 +3549,57 @@ local function HasFarmRoute(mount)
   return GetMountRoute(mount) ~= nil
 end
 
+local function GetMountGuideStatus(mount)
+  if type(mount) ~= "table" then
+    return nil
+  end
+
+  if GetMountLocationGuide(mount)
+    or GetMountCoordinates(mount)
+    or GetMountQuestStart(mount)
+    or GetMountRoute(mount)
+    or GetMountGuideField(mount,
+      "guideUrl",
+      "guideURL",
+      "wowheadUrl",
+      "wowheadURL",
+      "wowhead",
+      "url",
+      "link",
+      "itemID",
+      "guideItemID",
+      "rewardItemID",
+      "spellID",
+      "guideSpellID",
+      "mountSpellID",
+      "requirement",
+      "requirements") then
+    return L("guideStatusCurated")
+  end
+
+  if mount.autoCatalog then
+    return L("guideStatusCatalog")
+  end
+
+  return L("guideStatusNeedsGuide")
+end
+
+local function FormatGuideStatusBadge(status)
+  return status and ("[" .. status .. "]") or nil
+end
+
 local function BuildCompactMountNote(mount, boss, vendor)
   if type(mount) ~= "table" then
     return ""
   end
 
   local details = {}
-  local dropChance = GetMountDropChance(mount)
-  local cost = LocalizeDataValue(mount.cost)
-  local profession = GetMountProfession(mount)
   local eventName = GetMountEventName(mount)
-  local route = GetMountRoute(mount)
+  local guideStatus = GetMountGuideStatus(mount)
+
+  if guideStatus then
+    table.insert(details, FormatGuideStatusBadge(guideStatus))
+  end
 
   if boss and boss ~= "" and boss ~= L("unknownBoss") and boss ~= vendor then
     table.insert(details, boss)
@@ -2933,27 +3607,11 @@ local function BuildCompactMountNote(mount, boss, vendor)
     table.insert(details, vendor)
   end
 
-  if dropChance then
-    table.insert(details, L("dropChanceLabel") .. ": " .. dropChance)
-  end
-
-  if profession then
-    table.insert(details, L("professionLabel") .. ": " .. profession)
-  end
-
-  if cost and cost ~= "" then
-    table.insert(details, L("costLabel") .. ": " .. cost)
-  end
-
   if eventName then
     table.insert(details, L("eventLabel") .. ": " .. eventName)
   end
 
-  if route then
-    table.insert(details, L("routeLabel"))
-  end
-
-  return ShortenText(table.concat(details, " | "), 72)
+  return ShortenText(table.concat(details, " | "), 58)
 end
 
 local function BuildMountInfoLine(mount)
@@ -3013,55 +3671,76 @@ local function BuildMountPreviewDetails(mount)
   end
 
   local lines = {}
-  local zone = LocalizeDataValue(mount.zone)
-  local method = GetMountMethod(mount)
-  local coordinates = GetMountCoordinates(mount)
-  local requirements = GetMountRequirementsText(mount)
-  local respawn = GetMountRespawn(mount)
-  local macro = GetMountMacro(mount)
-  local tomtom = GetMountTomTomCommand(mount)
+  local zone = SafeCall(GetMountDisplayZone, mount)
+  local method = SafeCall(GetMountMethod, mount)
+    or SafeCall(GetSourceDisplayName, mount.source or "Other")
+    or tostring(mount.source or "Other")
+  local coordinates = SafeCall(GetMountCoordinates, mount)
+  local questStart = SafeCall(GetMountQuestStart, mount)
+  local questIDs = SafeCall(GetMountQuestIDsText, mount)
+  local requirements = SafeCall(GetMountRequirementsText, mount)
+  local respawn = SafeCall(GetMountRespawn, mount)
+  local macro = SafeCall(GetMountMacro, mount)
+  local tomtom = SafeCall(GetMountTomTomCommand, mount)
+  local guideLabel = SafeCall(GetMountGuideLabel, mount)
+  local guideStatus = SafeCall(GetMountGuideStatus, mount)
   local cost = LocalizeDataValue(mount.cost)
-  local dropChance = GetMountDropChance(mount)
-  local bestCharacter = GetBestCharacterForMount(mount)
-  local note = LocalizeDataValue(mount.note)
-  local unavailableReason = GetMountUnavailableReason(mount)
-  local profession = GetMountProfession(mount)
+  local dropChance = SafeCall(GetMountDropChance, mount)
+  local bestCharacter = SafeCall(GetBestCharacterForMount, mount)
+  local noteValue = SafeCall(GetMountGuideField, mount, "note", "notes", "guideNote")
+  local note = SafeCall(FormatListValue, noteValue, "\n") or LocalizeDataValue(mount.note)
+  local unavailableReason = SafeCall(GetMountUnavailableReason, mount)
+  local profession = SafeCall(GetMountProfession, mount)
 
   if (not note or note == "") and mount.autoCatalog then
     note = LocalizeDataValue(mount.journalSource)
   end
 
-  if method or profession or unavailableReason or bestCharacter then
+  if method or guideStatus or profession or unavailableReason or bestCharacter then
     AddGuideSection(lines, L("previewSectionMethod"))
     AddGuideSectionLine(lines, L("methodLabel"), method)
+    AddGuideSectionLine(lines, L("guideStatusLabel"), guideStatus)
     AddGuideSectionLine(lines, L("professionLabel"), profession)
     AddGuideSectionLine(lines, L("unavailableLabel"), unavailableReason)
     AddGuideSectionLine(lines, L("bestCharacterLabel"), bestCharacter)
   end
 
-  if zone or coordinates then
+  if zone or questStart or coordinates then
     AddGuideSection(lines, L("previewSectionLocation"))
     AddGuideSectionLine(lines, L("zoneLabel"), zone)
+    AddGuideSectionLine(lines, L("questStartLabel"), questStart)
     AddGuideSectionLine(lines, L("coordinatesLabel"), coordinates)
   end
 
-  if requirements then
+  if requirements or questIDs then
     AddGuideSection(lines, L("previewSectionRequirements"))
-    table.insert(lines, requirements)
+    AddGuideSectionLine(lines, L("questIDsLabel"), questIDs)
+
+    if requirements then
+      table.insert(lines, requirements)
+    end
   end
 
-  if respawn or dropChance or cost or macro or tomtom then
+  if respawn or dropChance or cost or macro or tomtom or guideLabel then
     AddGuideSection(lines, L("previewSectionReward"))
     AddGuideSectionLine(lines, L("respawnLabel"), respawn)
     AddGuideSectionLine(lines, L("dropChanceLabel"), dropChance)
     AddGuideSectionLine(lines, L("costLabel"), cost)
     AddGuideSectionLine(lines, L("macroLabel"), macro)
     AddGuideSectionLine(lines, L("tomtomLabel"), tomtom)
+    AddGuideSectionLine(lines, L("guideLinkLabel"), guideLabel)
   end
 
   if note and note ~= "" then
     AddGuideSection(lines, L("previewSectionNotes"))
     table.insert(lines, "  " .. note)
+  end
+
+  if #lines == 0 then
+    AddGuideSection(lines, L("previewSectionMethod"))
+    AddGuideSectionLine(lines, L("methodLabel"), method)
+    AddGuideSectionLine(lines, L("zoneLabel"), zone)
+    AddGuideSectionLine(lines, L("unknownBoss"), LocalizeDataValue(mount.boss))
   end
 
   return table.concat(lines, "\n")
@@ -3087,7 +3766,7 @@ local function ShouldRequireActiveEventForMode(mode)
     return true
   end
 
-  return GetAzerColectOption("showInactiveEvents") == false
+  return GetMountAtlasOption("showInactiveEvents") == false
 end
 
 local function PassesMountFilters(mount)
@@ -3142,26 +3821,29 @@ end
 
 local function BuildMountJournalNameCache()
   if not C_MountJournal or not C_MountJournal.GetMountIDs or not C_MountJournal.GetMountInfoByID then
-    AzerColectRuntime.mountJournalNameCache = nil
-    AzerColectRuntime.collectedMountNameCache = nil
-    AzerColectRuntime.collectedMountIDCache = nil
+    MountAtlasRuntime.mountJournalNameCache = nil
+    MountAtlasRuntime.mountJournalSpellCache = nil
+    MountAtlasRuntime.collectedMountNameCache = nil
+    MountAtlasRuntime.collectedMountIDCache = nil
     return nil
   end
 
   local mountIDs = SafeCall(C_MountJournal.GetMountIDs)
 
   if type(mountIDs) ~= "table" then
-    AzerColectRuntime.mountJournalNameCache = nil
-    AzerColectRuntime.collectedMountNameCache = nil
-    AzerColectRuntime.collectedMountIDCache = nil
+    MountAtlasRuntime.mountJournalNameCache = nil
+    MountAtlasRuntime.mountJournalSpellCache = nil
+    MountAtlasRuntime.collectedMountNameCache = nil
+    MountAtlasRuntime.collectedMountIDCache = nil
     return nil
   end
 
-  AzerColectRuntime.mountJournalNameCache = {}
-  AzerColectRuntime.collectedMountNameCache = {}
-  AzerColectRuntime.collectedMountIDCache = {}
-  AzerColectRuntime.mountDisplayNameCache = AzerColectRuntime.mountDisplayNameCache or {}
-  AzerColectRuntime.mountIconCache = AzerColectRuntime.mountIconCache or {}
+  MountAtlasRuntime.mountJournalNameCache = {}
+  MountAtlasRuntime.mountJournalSpellCache = {}
+  MountAtlasRuntime.collectedMountNameCache = {}
+  MountAtlasRuntime.collectedMountIDCache = {}
+  MountAtlasRuntime.mountDisplayNameCache = MountAtlasRuntime.mountDisplayNameCache or {}
+  MountAtlasRuntime.mountIconCache = MountAtlasRuntime.mountIconCache or {}
 
   for _, journalMountID in ipairs(mountIDs) do
     local info = GetJournalMountInfo(journalMountID)
@@ -3169,18 +3851,22 @@ local function BuildMountJournalNameCache()
     if info and info.name then
       local key = Normalize(info.name)
 
-      AzerColectRuntime.mountJournalNameCache[key] = journalMountID
-      AzerColectRuntime.mountDisplayNameCache[journalMountID] = info.name
-      AzerColectRuntime.mountIconCache[journalMountID] = info.icon
+      MountAtlasRuntime.mountJournalNameCache[key] = journalMountID
+      MountAtlasRuntime.mountDisplayNameCache[journalMountID] = info.name
+      MountAtlasRuntime.mountIconCache[journalMountID] = info.icon
+
+      if info.spellID then
+        MountAtlasRuntime.mountJournalSpellCache[tonumber(info.spellID)] = journalMountID
+      end
 
       if info.isCollected == true then
-        AzerColectRuntime.collectedMountIDCache[journalMountID] = true
-        AzerColectRuntime.collectedMountNameCache[key] = true
+        MountAtlasRuntime.collectedMountIDCache[journalMountID] = true
+        MountAtlasRuntime.collectedMountNameCache[key] = true
       end
     end
   end
 
-  return AzerColectRuntime.mountJournalNameCache
+  return MountAtlasRuntime.mountJournalNameCache
 end
 
 local function BuildCollectedMountNameCache()
@@ -3188,7 +3874,7 @@ local function BuildCollectedMountNameCache()
     return nil
   end
 
-  return AzerColectRuntime.collectedMountNameCache
+  return MountAtlasRuntime.collectedMountNameCache
 end
 
 local function GetMountJournalID(mount)
@@ -3196,21 +3882,37 @@ local function GetMountJournalID(mount)
     return mount
   end
 
-  if mount.mountID and mount.mountID ~= 0 then
-    return mount.mountID
+  local configuredMountID = tonumber(mount.mountID)
+  local configuredSpellID = tonumber(mount.spellID or mount.mountSpellID or mount.spell)
+
+  if configuredMountID and configuredMountID ~= 0 and GetJournalMountInfo(configuredMountID) then
+    return configuredMountID
+  end
+
+  if configuredSpellID and configuredSpellID ~= 0 then
+    local spellCache = MountAtlasRuntime.mountJournalSpellCache
+
+    if not spellCache then
+      BuildMountJournalNameCache()
+      spellCache = MountAtlasRuntime.mountJournalSpellCache
+    end
+
+    if spellCache and spellCache[configuredSpellID] then
+      return spellCache[configuredSpellID]
+    end
   end
 
   if not mount.name or mount.name == "" then
-    return nil
+    return configuredMountID
   end
 
-  local cache = AzerColectRuntime.mountJournalNameCache or BuildMountJournalNameCache()
+  local cache = MountAtlasRuntime.mountJournalNameCache or BuildMountJournalNameCache()
 
   if not cache then
-    return nil
+    return configuredMountID
   end
 
-  return cache[Normalize(mount.name)]
+  return cache[Normalize(mount.name)] or configuredMountID
 end
 
 GetMountDisplayName = function(mount)
@@ -3218,10 +3920,14 @@ GetMountDisplayName = function(mount)
     return tostring(mount or "")
   end
 
+  if not mount.autoCatalog and mount.name and mount.name ~= "" then
+    return mount.name
+  end
+
   local journalID = GetMountJournalID(mount)
 
   if journalID then
-    local cachedName = AzerColectRuntime.mountDisplayNameCache and AzerColectRuntime.mountDisplayNameCache[journalID]
+    local cachedName = MountAtlasRuntime.mountDisplayNameCache and MountAtlasRuntime.mountDisplayNameCache[journalID]
 
     if cachedName and cachedName ~= "" then
       return cachedName
@@ -3242,7 +3948,7 @@ local function IsMountNameCollected(mountName)
     return false
   end
 
-  local cache = AzerColectRuntime.collectedMountNameCache or BuildCollectedMountNameCache()
+  local cache = MountAtlasRuntime.collectedMountNameCache or BuildCollectedMountNameCache()
 
   if not cache then
     return false
@@ -3264,8 +3970,8 @@ local function HasMount(mount)
   end
 
   if mountID then
-    if AzerColectRuntime.collectedMountIDCache then
-      return AzerColectRuntime.collectedMountIDCache[mountID] == true
+    if MountAtlasRuntime.collectedMountIDCache then
+      return MountAtlasRuntime.collectedMountIDCache[mountID] == true
     end
 
     local info = GetJournalMountInfo(mountID)
@@ -3312,7 +4018,7 @@ local function FindMount(query)
   local mountID = tonumber(cleanQuery)
   local firstPartialMatch
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     local mountName = Normalize(mount.name)
     local displayName = Normalize(GetMountDisplayName(mount))
 
@@ -3344,7 +4050,7 @@ local function FindAchievement(query)
   local queryID = tonumber(cleanQuery)
   local firstPartialMatch
 
-  for _, entry in ipairs(AzerColectAchievements or {}) do
+  for _, entry in ipairs(MountAtlasAchievements or {}) do
     local achievementID = GetAchievementID(entry)
     local achievementName = Normalize(GetAchievementDisplayName(entry))
 
@@ -3375,14 +4081,18 @@ local function MountMatchesSearch(mount)
     return true
   end
 
-  AzerColectRuntime.mountSearchTextCache = AzerColectRuntime.mountSearchTextCache or {}
+  MountAtlasRuntime.mountSearchTextCache = MountAtlasRuntime.mountSearchTextCache or {}
 
   local key = GetMountKey(mount)
-  local searchText = AzerColectRuntime.mountSearchTextCache[key]
+  local searchText = MountAtlasRuntime.mountSearchTextCache[key]
 
   if not searchText then
+    local journalID = GetMountJournalID(mount)
+    local journalInfo = journalID and GetJournalMountInfo(journalID)
+
     searchText = Normalize(
       (mount.name or "") .. " "
+      .. (journalInfo and journalInfo.name or "") .. " "
       .. GetMountDisplayName(mount) .. " "
       .. (LocalizeDataValue(mount.boss) or "") .. " "
       .. (LocalizeDataValue(mount.vendor) or "") .. " "
@@ -3397,7 +4107,7 @@ local function MountMatchesSearch(mount)
       .. (LocalizeDataValue(mount.journalSource) or "") .. " "
       .. (LocalizeDataValue(mount.note) or "")
     )
-    AzerColectRuntime.mountSearchTextCache[key] = searchText
+    MountAtlasRuntime.mountSearchTextCache[key] = searchText
   end
 
   return string.find(searchText, query, 1, true) ~= nil
@@ -3534,9 +4244,9 @@ function GetCurrentCharacterProfile()
   EnsureDB()
 
   local characterKey = GetCharacterKey()
-  local profile = AzerColectDB.characters[characterKey] or {}
+  local profile = MountAtlasDB.characters[characterKey] or {}
 
-  AzerColectDB.characters[characterKey] = profile
+  MountAtlasDB.characters[characterKey] = profile
   profile.key = characterKey
   profile.name = UnitName("player") or L("unknownCharacter")
   profile.realm = GetRealmName() or L("unknownRealm")
@@ -3739,7 +4449,7 @@ end
 function StoreAchievementSnapshot(profile)
   profile.achievements = {}
 
-  for _, entry in ipairs(AzerColectAchievements or {}) do
+  for _, entry in ipairs(MountAtlasAchievements or {}) do
     local achievementID = GetAchievementID(entry)
 
     if achievementID then
@@ -3757,16 +4467,16 @@ end
 function UpdateCurrentCharacterSnapshot(force)
   local now = Now()
 
-  if not force and AzerColectRuntime.snapshotQueued then
+  if not force and MountAtlasRuntime.snapshotQueued then
     return
   end
 
-  if not force and AzerColectRuntime.lastCharacterSnapshotAt > 0 and (now - AzerColectRuntime.lastCharacterSnapshotAt) < AzerColectRuntime.CHARACTER_SNAPSHOT_THROTTLE then
-    if not AzerColectRuntime.snapshotQueued and C_Timer and C_Timer.After then
-      AzerColectRuntime.snapshotQueued = true
+  if not force and MountAtlasRuntime.lastCharacterSnapshotAt > 0 and (now - MountAtlasRuntime.lastCharacterSnapshotAt) < MountAtlasRuntime.CHARACTER_SNAPSHOT_THROTTLE then
+    if not MountAtlasRuntime.snapshotQueued and C_Timer and C_Timer.After then
+      MountAtlasRuntime.snapshotQueued = true
 
-      C_Timer.After(AzerColectRuntime.CHARACTER_SNAPSHOT_THROTTLE, function()
-        AzerColectRuntime.snapshotQueued = false
+      C_Timer.After(MountAtlasRuntime.CHARACTER_SNAPSHOT_THROTTLE, function()
+        MountAtlasRuntime.snapshotQueued = false
         UpdateCurrentCharacterSnapshot(true)
         QueueRefreshWindow(0.05)
       end)
@@ -3775,7 +4485,7 @@ function UpdateCurrentCharacterSnapshot(force)
     return
   end
 
-  AzerColectRuntime.lastCharacterSnapshotAt = now
+  MountAtlasRuntime.lastCharacterSnapshotAt = now
 
   local ok, profile = pcall(GetCurrentCharacterProfile)
 
@@ -3787,7 +4497,7 @@ function UpdateCurrentCharacterSnapshot(force)
   pcall(StoreProfessionSnapshot, profile)
   pcall(StoreQuestSnapshot, profile)
   pcall(StoreAchievementSnapshot, profile)
-  InvalidateAzerColectDataCache()
+  InvalidateMountAtlasDataCache()
 end
 
 function GetStoredCharacterCount()
@@ -3795,7 +4505,7 @@ function GetStoredCharacterCount()
 
   local count = 0
 
-  for _, profile in pairs(AzerColectDB.characters or {}) do
+  for _, profile in pairs(MountAtlasDB.characters or {}) do
     if type(profile) == "table" and profile.name then
       count = count + 1
     end
@@ -3942,19 +4652,19 @@ function AddProgressRequirementsFromList(requirements, progressList)
 end
 
 function CollectConfiguredProgressRequirements()
-  if AzerColectRuntime.configuredProgressRequirementsCache then
-    return AzerColectRuntime.configuredProgressRequirementsCache
+  if MountAtlasRuntime.configuredProgressRequirementsCache then
+    return MountAtlasRuntime.configuredProgressRequirementsCache
   end
 
   local requirements = {}
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     for _, requirement in ipairs(ExtractMountProgressRequirements(mount)) do
       table.insert(requirements, requirement)
     end
   end
 
-  AzerColectRuntime.configuredProgressRequirementsCache = requirements
+  MountAtlasRuntime.configuredProgressRequirementsCache = requirements
 
   return requirements
 end
@@ -3966,12 +4676,12 @@ function ExtractMountProgressRequirements(mount)
     return requirements
   end
 
-  AzerColectRuntime.mountProgressRequirementsCache = AzerColectRuntime.mountProgressRequirementsCache or {}
+  MountAtlasRuntime.mountProgressRequirementsCache = MountAtlasRuntime.mountProgressRequirementsCache or {}
 
   local mountKey = GetMountKey(mount)
 
-  if AzerColectRuntime.mountProgressRequirementsCache[mountKey] then
-    return AzerColectRuntime.mountProgressRequirementsCache[mountKey]
+  if MountAtlasRuntime.mountProgressRequirementsCache[mountKey] then
+    return MountAtlasRuntime.mountProgressRequirementsCache[mountKey]
   end
 
   local faction = LocalizeDataValue(mount.reputation or mount.faction or mount.renownFaction)
@@ -4075,29 +4785,29 @@ function ExtractMountProgressRequirements(mount)
     })
   end
 
-  AzerColectRuntime.mountProgressRequirementsCache[mountKey] = requirements
+  MountAtlasRuntime.mountProgressRequirementsCache[mountKey] = requirements
 
   return requirements
 end
 
 function BuildAchievementMountLookup()
-  if AzerColectRuntime.achievementLookupByMountID and AzerColectRuntime.achievementLookupByName then
+  if MountAtlasRuntime.achievementLookupByMountID and MountAtlasRuntime.achievementLookupByName then
     return
   end
 
-  AzerColectRuntime.achievementLookupByMountID = {}
-  AzerColectRuntime.achievementLookupByName = {}
+  MountAtlasRuntime.achievementLookupByMountID = {}
+  MountAtlasRuntime.achievementLookupByName = {}
 
-  for _, entry in ipairs(AzerColectAchievements or {}) do
+  for _, entry in ipairs(MountAtlasAchievements or {}) do
     if type(entry) == "table" then
       if entry.mountID then
-        AzerColectRuntime.achievementLookupByMountID[entry.mountID] = entry
+        MountAtlasRuntime.achievementLookupByMountID[entry.mountID] = entry
       end
 
       local rewardMount = Normalize(ExtractMountNameFromReward(entry.reward) or "")
 
       if rewardMount ~= "" then
-        AzerColectRuntime.achievementLookupByName[rewardMount] = entry
+        MountAtlasRuntime.achievementLookupByName[rewardMount] = entry
       end
     end
   end
@@ -4110,14 +4820,14 @@ function FindAchievementForMount(mount)
 
   BuildAchievementMountLookup()
 
-  if mount.mountID and AzerColectRuntime.achievementLookupByMountID and AzerColectRuntime.achievementLookupByMountID[mount.mountID] then
-    return AzerColectRuntime.achievementLookupByMountID[mount.mountID]
+  if mount.mountID and MountAtlasRuntime.achievementLookupByMountID and MountAtlasRuntime.achievementLookupByMountID[mount.mountID] then
+    return MountAtlasRuntime.achievementLookupByMountID[mount.mountID]
   end
 
   local mountName = Normalize(GetMountDisplayName(mount))
 
-  if AzerColectRuntime.achievementLookupByName then
-    return AzerColectRuntime.achievementLookupByName[mountName]
+  if MountAtlasRuntime.achievementLookupByName then
+    return MountAtlasRuntime.achievementLookupByName[mountName]
   end
 end
 
@@ -4242,7 +4952,7 @@ function GetBestCharacterForMount(mount)
   local bestScore = -1
   local bestReasons = {}
 
-  for _, profile in pairs(AzerColectDB.characters or {}) do
+  for _, profile in pairs(MountAtlasDB.characters or {}) do
     if type(profile) == "table" and profile.name then
       local score = 0
       local reasons = {}
@@ -4454,7 +5164,7 @@ end
 function BuildEasyMissingItems()
   local items = {}
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     local collected = HasMount(mount)
 
     if IsEasyMissingMount(mount)
@@ -4492,7 +5202,7 @@ end
 local function BuildMountItems(mode)
   local items = {}
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     local collected = HasMount(mount)
 
     if ShouldShowMount(mount, mode)
@@ -4587,11 +5297,11 @@ end
 local function BuildAchievementItems()
   local items = {}
 
-  if not AzerColectAchievements or #AzerColectAchievements == 0 then
+  if not MountAtlasAchievements or #MountAtlasAchievements == 0 then
     return items, L("noAchievementsConfigured")
   end
 
-  for _, entry in ipairs(AzerColectAchievements or {}) do
+  for _, entry in ipairs(MountAtlasAchievements or {}) do
     local item = PassesAchievementFilters(entry) and CreateAchievementItem(entry)
 
     if item and AchievementMatchesSearch(item) and CollectionMatches(item.completed) then
@@ -4609,7 +5319,7 @@ local function BuildSourceItems()
   local achievementMountIDs = {}
 
   if currentSourceFilter == "Achievement" or currentSourceFilter == "all" then
-    for _, entry in ipairs(AzerColectAchievements or {}) do
+    for _, entry in ipairs(MountAtlasAchievements or {}) do
       local item = PassesAchievementFilters(entry) and CreateAchievementItem(entry)
 
       if item and AchievementMatchesSearch(item) and CollectionMatches(item.completed) then
@@ -4622,7 +5332,7 @@ local function BuildSourceItems()
     end
   end
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     local collected = HasMount(mount)
     local isDuplicateAchievementMount = mount.mountID
       and achievementMountIDs[mount.mountID]
@@ -4672,7 +5382,7 @@ end
 local function BuildRouteItems()
   local items = {}
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     local collected = HasMount(mount)
 
     if HasFarmRoute(mount)
@@ -4694,7 +5404,7 @@ end
 local function BuildFavoriteItems()
   local items = {}
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     local collected = HasMount(mount)
 
     if IsFavoriteMount(mount)
@@ -4708,7 +5418,7 @@ local function BuildFavoriteItems()
     end
   end
 
-  for _, entry in ipairs(AzerColectAchievements or {}) do
+  for _, entry in ipairs(MountAtlasAchievements or {}) do
     if IsFavoriteAchievement(entry) and PassesAchievementFilters(entry) then
       local item = CreateAchievementItem(entry)
 
@@ -4749,10 +5459,10 @@ local function BuildItems()
     .. currentSourceFilter .. "\001"
     .. currentCollectionFilter .. "\001"
     .. SearchText() .. "\001"
-    .. tostring(AzerColectRuntime.cacheRevision)
+    .. tostring(MountAtlasRuntime.cacheRevision)
 
-  if AzerColectRuntime.itemListCacheKey == cacheKey and AzerColectRuntime.itemListCacheItems then
-    return AzerColectRuntime.itemListCacheItems, AzerColectRuntime.itemListCacheEmptyText
+  if MountAtlasRuntime.itemListCacheKey == cacheKey and MountAtlasRuntime.itemListCacheItems then
+    return MountAtlasRuntime.itemListCacheItems, MountAtlasRuntime.itemListCacheEmptyText
   end
 
   local items
@@ -4774,9 +5484,9 @@ local function BuildItems()
     items, emptyText = BuildMountItems(currentMode), L("noPendingMounts")
   end
 
-  AzerColectRuntime.itemListCacheKey = cacheKey
-  AzerColectRuntime.itemListCacheItems = items
-  AzerColectRuntime.itemListCacheEmptyText = emptyText
+  MountAtlasRuntime.itemListCacheKey = cacheKey
+  MountAtlasRuntime.itemListCacheItems = items
+  MountAtlasRuntime.itemListCacheEmptyText = emptyText
 
   return items, emptyText
 end
@@ -4797,7 +5507,7 @@ local function CountMountsForMode(mode)
   local total = 0
   local attempted = 0
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     if ShouldShowMount(mount, mode)
       and (not ShouldRequireActiveEventForMode(mode) or IsEventMountAvailable(mount))
       and not IsMountUnavailable(mount)
@@ -4814,15 +5524,15 @@ local function CountMountsForMode(mode)
 end
 
 local function GetCollectionStats()
-  if AzerColectRuntime.collectionStatsCacheRevision == AzerColectRuntime.cacheRevision and AzerColectRuntime.collectionStatsCache then
-    return AzerColectRuntime.collectionStatsCache.total, AzerColectRuntime.collectionStatsCache.collected, AzerColectRuntime.collectionStatsCache.missing, AzerColectRuntime.collectionStatsCache.favorites
+  if MountAtlasRuntime.collectionStatsCacheRevision == MountAtlasRuntime.cacheRevision and MountAtlasRuntime.collectionStatsCache then
+    return MountAtlasRuntime.collectionStatsCache.total, MountAtlasRuntime.collectionStatsCache.collected, MountAtlasRuntime.collectionStatsCache.missing, MountAtlasRuntime.collectionStatsCache.favorites
   end
 
   local total = 0
   local collected = 0
   local favorites = 0
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     if IsExpansionEnabled(GetMountExpansion(mount)) and not IsMountUnavailable(mount) then
       total = total + 1
 
@@ -4836,15 +5546,15 @@ local function GetCollectionStats()
     end
   end
 
-  AzerColectRuntime.collectionStatsCacheRevision = AzerColectRuntime.cacheRevision
-  AzerColectRuntime.collectionStatsCache = {
+  MountAtlasRuntime.collectionStatsCacheRevision = MountAtlasRuntime.cacheRevision
+  MountAtlasRuntime.collectionStatsCache = {
     total = total,
     collected = collected,
     missing = math.max(0, total - collected),
     favorites = favorites
   }
 
-  return AzerColectRuntime.collectionStatsCache.total, AzerColectRuntime.collectionStatsCache.collected, AzerColectRuntime.collectionStatsCache.missing, AzerColectRuntime.collectionStatsCache.favorites
+  return MountAtlasRuntime.collectionStatsCache.total, MountAtlasRuntime.collectionStatsCache.collected, MountAtlasRuntime.collectionStatsCache.missing, MountAtlasRuntime.collectionStatsCache.favorites
 end
 
 function GetJournalCollectionCounts()
@@ -4947,8 +5657,8 @@ function CaptureKnownMountCollection(showAlerts)
     return
   end
 
-  local knownMounts = AzerColectDB.knownMounts or {}
-  local initialized = AzerColectDB.knownMountsInitialized == true
+  local knownMounts = MountAtlasDB.knownMounts or {}
+  local initialized = MountAtlasDB.knownMountsInitialized == true
   local newMounts = {}
 
   for _, mountID in ipairs(mountIDs) do
@@ -4970,8 +5680,8 @@ function CaptureKnownMountCollection(showAlerts)
     end
   end
 
-  AzerColectDB.knownMounts = knownMounts
-  AzerColectDB.knownMountsInitialized = true
+  MountAtlasDB.knownMounts = knownMounts
+  MountAtlasDB.knownMountsInitialized = true
 
   for _, mountInfo in ipairs(newMounts) do
     QueueNewMountAlert(mountInfo.mountID, mountInfo.name)
@@ -4979,20 +5689,20 @@ function CaptureKnownMountCollection(showAlerts)
 end
 
 function ScheduleMountCollectionScan(showAlerts)
-  AzerColectRuntime.mountScanShouldAlert = AzerColectRuntime.mountScanShouldAlert or showAlerts
+  MountAtlasRuntime.mountScanShouldAlert = MountAtlasRuntime.mountScanShouldAlert or showAlerts
 
-  if AzerColectRuntime.mountScanQueued then
+  if MountAtlasRuntime.mountScanQueued then
     return
   end
 
-  AzerColectRuntime.mountScanQueued = true
+  MountAtlasRuntime.mountScanQueued = true
 
   if C_Timer and C_Timer.After then
     C_Timer.After(showAlerts and 0.8 or 4, function()
-      local shouldAlert = AzerColectRuntime.mountScanShouldAlert == true
+      local shouldAlert = MountAtlasRuntime.mountScanShouldAlert == true
 
-      AzerColectRuntime.mountScanQueued = false
-      AzerColectRuntime.mountScanShouldAlert = false
+      MountAtlasRuntime.mountScanQueued = false
+      MountAtlasRuntime.mountScanShouldAlert = false
       CaptureKnownMountCollection(shouldAlert)
 
       if mainFrame and mainFrame:IsShown() then
@@ -5000,10 +5710,10 @@ function ScheduleMountCollectionScan(showAlerts)
       end
     end)
   else
-    local shouldAlert = AzerColectRuntime.mountScanShouldAlert == true
+    local shouldAlert = MountAtlasRuntime.mountScanShouldAlert == true
 
-    AzerColectRuntime.mountScanQueued = false
-    AzerColectRuntime.mountScanShouldAlert = false
+    MountAtlasRuntime.mountScanQueued = false
+    MountAtlasRuntime.mountScanShouldAlert = false
     CaptureKnownMountCollection(shouldAlert)
   end
 end
@@ -5019,8 +5729,8 @@ function GetExpansionDisplayName(expansion)
 end
 
 function BuildExpansionProgressStats()
-  if AzerColectRuntime.expansionProgressCacheRevision == AzerColectRuntime.cacheRevision and AzerColectRuntime.expansionProgressOrdered and AzerColectRuntime.expansionProgressStats then
-    return AzerColectRuntime.expansionProgressOrdered, AzerColectRuntime.expansionProgressStats
+  if MountAtlasRuntime.expansionProgressCacheRevision == MountAtlasRuntime.cacheRevision and MountAtlasRuntime.expansionProgressOrdered and MountAtlasRuntime.expansionProgressStats then
+    return MountAtlasRuntime.expansionProgressOrdered, MountAtlasRuntime.expansionProgressStats
   end
 
   local stats = {}
@@ -5039,7 +5749,7 @@ function BuildExpansionProgressStats()
     end
   end
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     local expansion = GetMountExpansion(mount)
 
     if IsExpansionEnabled(expansion) and not IsMountUnavailable(mount) then
@@ -5062,9 +5772,9 @@ function BuildExpansionProgressStats()
     end
   end
 
-  AzerColectRuntime.expansionProgressCacheRevision = AzerColectRuntime.cacheRevision
-  AzerColectRuntime.expansionProgressOrdered = ordered
-  AzerColectRuntime.expansionProgressStats = stats
+  MountAtlasRuntime.expansionProgressCacheRevision = MountAtlasRuntime.cacheRevision
+  MountAtlasRuntime.expansionProgressOrdered = ordered
+  MountAtlasRuntime.expansionProgressStats = stats
 
   return ordered, stats
 end
@@ -5344,16 +6054,19 @@ end
 
 function BuildSmartPriorityPlan()
   local scope, title = GetSmartPriorityScope()
-  local cacheKey = scope .. "\001" .. tostring(AzerColectRuntime.cacheRevision)
+  local cacheKey = scope .. "\001"
+    .. currentExpansionFilter .. "\001"
+    .. tostring(MountAtlasRuntime.cacheRevision)
 
-  if AzerColectRuntime.priorityPlanCacheKey == cacheKey and AzerColectRuntime.priorityPlanCache then
-    return AzerColectRuntime.priorityPlanCache
+  if MountAtlasRuntime.priorityPlanCacheKey == cacheKey and MountAtlasRuntime.priorityPlanCache then
+    return MountAtlasRuntime.priorityPlanCache
   end
 
   local candidates = {}
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     if IsExpansionEnabled(GetMountExpansion(mount))
+      and ExpansionMatches(GetMountExpansion(mount), currentExpansionFilter)
       and IsEventMountAvailable(mount)
       and not IsMountUnavailable(mount)
       and not HasMount(mount)
@@ -5392,15 +6105,15 @@ function BuildSmartPriorityPlan()
     table.insert(recommendations, candidates[index])
   end
 
-  AzerColectRuntime.priorityPlanCacheKey = cacheKey
-  AzerColectRuntime.priorityPlanCache = {
+  MountAtlasRuntime.priorityPlanCacheKey = cacheKey
+  MountAtlasRuntime.priorityPlanCache = {
     title = title,
     scope = scope,
     total = #candidates,
     recommendations = recommendations
   }
 
-  return AzerColectRuntime.priorityPlanCache
+  return MountAtlasRuntime.priorityPlanCache
 end
 
 function SetPriorityRowHover(row, isHovered)
@@ -5565,7 +6278,7 @@ function PrintSummary()
 end
 
 function PlayNewMountAlertSound()
-  if not AzerColectDB or not AzerColectDB.newMountAlerts or AzerColectDB.newMountAlerts.sound == false then
+  if not MountAtlasDB or not MountAtlasDB.newMountAlerts or MountAtlasDB.newMountAlerts.sound == false then
     return
   end
 
@@ -5586,11 +6299,11 @@ function PlayNewMountAlertSound()
 end
 
 function CreateNewMountAlertFrame()
-  if AzerColectRuntime.newMountAlertFrame then
-    return AzerColectRuntime.newMountAlertFrame
+  if MountAtlasRuntime.newMountAlertFrame then
+    return MountAtlasRuntime.newMountAlertFrame
   end
 
-  local frame = CreateFrame("Frame", "AzerColectNewMountAlertFrame", UIParent)
+  local frame = CreateFrame("Frame", "MountAtlasNewMountAlertFrame", UIParent)
   frame:SetSize(470, 178)
   frame:SetPoint("TOP", UIParent, "TOP", 0, -142)
   frame:SetFrameStrata("DIALOG")
@@ -5656,13 +6369,13 @@ function CreateNewMountAlertFrame()
     frame.confetti[index] = particle
   end
 
-  AzerColectRuntime.newMountAlertFrame = frame
+  MountAtlasRuntime.newMountAlertFrame = frame
 
   return frame
 end
 
 function PlayNewMountConfetti(frame)
-  if not frame or not frame.confetti or not AzerColectDB or not AzerColectDB.newMountAlerts or AzerColectDB.newMountAlerts.confetti == false then
+  if not frame or not frame.confetti or not MountAtlasDB or not MountAtlasDB.newMountAlerts or MountAtlasDB.newMountAlerts.confetti == false then
     return
   end
 
@@ -5693,7 +6406,7 @@ function PlayNewMountConfetti(frame)
 end
 
 function ShowNextNewMountAlert()
-  local queue = AzerColectRuntime.newMountAlertQueue
+  local queue = MountAtlasRuntime.newMountAlertQueue
 
   if not queue or #queue == 0 then
     return
@@ -5727,12 +6440,12 @@ function ShowNextNewMountAlert()
   PlayNewMountAlertSound()
   PlayNewMountConfetti(frame)
 
-  AzerColectRuntime.newMountAlertToken = (AzerColectRuntime.newMountAlertToken or 0) + 1
-  local token = AzerColectRuntime.newMountAlertToken
+  MountAtlasRuntime.newMountAlertToken = (MountAtlasRuntime.newMountAlertToken or 0) + 1
+  local token = MountAtlasRuntime.newMountAlertToken
 
   if C_Timer and C_Timer.After then
     C_Timer.After(NEW_MOUNT_ALERT_DURATION, function()
-      if AzerColectRuntime.newMountAlertToken ~= token then
+      if MountAtlasRuntime.newMountAlertToken ~= token then
         return
       end
 
@@ -5745,13 +6458,13 @@ end
 function QueueNewMountAlert(mountID, mountName)
   EnsureDB()
 
-  if AzerColectDB.newMountAlerts.enabled == false then
+  if MountAtlasDB.newMountAlerts.enabled == false then
     return
   end
 
-  AzerColectRuntime.newMountAlertQueue = AzerColectRuntime.newMountAlertQueue or {}
+  MountAtlasRuntime.newMountAlertQueue = MountAtlasRuntime.newMountAlertQueue or {}
 
-  table.insert(AzerColectRuntime.newMountAlertQueue, {
+  table.insert(MountAtlasRuntime.newMountAlertQueue, {
     mountID = mountID,
     name = mountName
   })
@@ -5976,7 +6689,7 @@ function GetMountDisplayID(mount)
     return nil
   end
 
-  local cachedDisplayID = AzerColectRuntime.mountDisplayIDCache and AzerColectRuntime.mountDisplayIDCache[journalID]
+  local cachedDisplayID = MountAtlasRuntime.mountDisplayIDCache and MountAtlasRuntime.mountDisplayIDCache[journalID]
 
   if type(cachedDisplayID) == "number" and cachedDisplayID > 0 then
     return cachedDisplayID
@@ -5986,8 +6699,8 @@ function GetMountDisplayID(mount)
   local displayID = extra and extra.displayID
 
   if type(displayID) == "number" and displayID > 0 then
-    AzerColectRuntime.mountDisplayIDCache = AzerColectRuntime.mountDisplayIDCache or {}
-    AzerColectRuntime.mountDisplayIDCache[journalID] = displayID
+    MountAtlasRuntime.mountDisplayIDCache = MountAtlasRuntime.mountDisplayIDCache or {}
+    MountAtlasRuntime.mountDisplayIDCache[journalID] = displayID
     return displayID
   end
 end
@@ -5996,7 +6709,7 @@ function GetMountIcon(mount)
   local journalID = GetMountJournalID(mount)
 
   if journalID then
-    local cachedIcon = AzerColectRuntime.mountIconCache and AzerColectRuntime.mountIconCache[journalID]
+    local cachedIcon = MountAtlasRuntime.mountIconCache and MountAtlasRuntime.mountIconCache[journalID]
 
     if cachedIcon then
       return cachedIcon
@@ -6013,7 +6726,7 @@ function GetMountIcon(mount)
 end
 
 function AddTomTomWaypoint(mount)
-  local command = GetMountTomTomCommand(mount)
+  local command = SafeCall(GetMountTomTomCommand, mount)
 
   if not command or command == "" then
     Print(L("waypointUnavailable"))
@@ -6024,18 +6737,70 @@ function AddTomTomWaypoint(mount)
 
   if SlashCmdList and SlashCmdList["TOMTOM_WAY"] then
     SafeCall(SlashCmdList["TOMTOM_WAY"], tomtomCommand)
-    Print(L("waypointAdded", GetMountDisplayName(mount)))
+    Print(L("waypointAdded", SafeCall(GetMountDisplayName, mount) or L("previewMount")))
     return
   end
 
   Print(L("waypointCommand", command))
 end
 
+local function EnsureGuideLinkPopup()
+  if not StaticPopupDialogs or StaticPopupDialogs["MOUNTATLAS_GUIDE_LINK"] then
+    return
+  end
+
+  StaticPopupDialogs["MOUNTATLAS_GUIDE_LINK"] = {
+    text = L("guideLinkPopupText"),
+    button1 = OKAY or "OK",
+    hasEditBox = true,
+    editBoxWidth = 420,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+    OnShow = function(self, data)
+      local editBox = self.editBox or self.EditBox
+      local popupData = data or self.data
+      local url = popupData and popupData.url or ""
+
+      if editBox then
+        editBox:SetText(url)
+        editBox:HighlightText()
+        editBox:SetFocus()
+      end
+    end,
+    EditBoxOnEnterPressed = function(self)
+      self:GetParent():Hide()
+    end,
+    EditBoxOnEscapePressed = function(self)
+      self:GetParent():Hide()
+    end
+  }
+end
+
+local function ShowMountGuideLink(mount)
+  local url = SafeCall(GetMountGuideURL, mount)
+
+  if not url or url == "" then
+    Print(L("guideLinkUnavailable"))
+    return
+  end
+
+  local mountName = SafeCall(GetMountDisplayName, mount) or L("previewMount")
+
+  Print(L("guideLinkPrinted", mountName, url))
+
+  if StaticPopup_Show then
+    EnsureGuideLinkPopup()
+    StaticPopup_Show("MOUNTATLAS_GUIDE_LINK", mountName, nil, { url = url })
+  end
+end
+
 function BuildDailyRouteSteps()
   local candidates = {}
-  local skipAttempted = GetAzerColectOption("dailyRouteSkipAttempted")
+  local skipAttempted = GetMountAtlasOption("dailyRouteSkipAttempted")
 
-  for _, mount in ipairs(AzerColectMounts or {}) do
+  for _, mount in ipairs(MountAtlasMounts or {}) do
     if IsExpansionEnabled(GetMountExpansion(mount))
       and IsEventMountAvailable(mount)
       and not IsMountUnavailable(mount)
@@ -6083,7 +6848,7 @@ function UpdateDailyRoutePanel()
     return
   end
 
-  local route = AzerColectRuntime.dailyRoute
+  local route = MountAtlasRuntime.dailyRoute
   local steps = route and route.steps or {}
   local index = route and route.index or 0
   local step = steps[index]
@@ -6103,7 +6868,7 @@ function UpdateDailyRoutePanel()
 end
 
 function RunDailyRouteStep(index)
-  local route = AzerColectRuntime.dailyRoute
+  local route = MountAtlasRuntime.dailyRoute
 
   if not route or type(route.steps) ~= "table" then
     return
@@ -6112,7 +6877,7 @@ function RunDailyRouteStep(index)
   local step = route.steps[index]
 
   if not step or not step.mount then
-    AzerColectRuntime.dailyRoute = nil
+    MountAtlasRuntime.dailyRoute = nil
     Print(L("dailyRouteComplete"))
     UpdateDailyRoutePanel()
     return
@@ -6121,7 +6886,7 @@ function RunDailyRouteStep(index)
   route.index = index
   FocusPriorityMount(step.mount)
 
-  if GetAzerColectOption("dailyRouteAutoWaypoint") then
+  if GetMountAtlasOption("dailyRouteAutoWaypoint") then
     if GetMountTomTomCommand(step.mount) then
       AddTomTomWaypoint(step.mount)
     else
@@ -6137,13 +6902,13 @@ function StartDailyRoute()
   local steps = BuildDailyRouteSteps()
 
   if #steps == 0 then
-    AzerColectRuntime.dailyRoute = nil
+    MountAtlasRuntime.dailyRoute = nil
     Print(L("dailyRouteNoSteps"))
     UpdateDailyRoutePanel()
     return
   end
 
-  AzerColectRuntime.dailyRoute = {
+  MountAtlasRuntime.dailyRoute = {
     steps = steps,
     index = 1
   }
@@ -6152,7 +6917,7 @@ function StartDailyRoute()
 end
 
 function AdvanceDailyRoute()
-  local route = AzerColectRuntime.dailyRoute
+  local route = MountAtlasRuntime.dailyRoute
 
   if not route or type(route.steps) ~= "table" then
     StartDailyRoute()
@@ -6163,9 +6928,48 @@ function AdvanceDailyRoute()
 end
 
 function StopDailyRoute()
-  AzerColectRuntime.dailyRoute = nil
+  MountAtlasRuntime.dailyRoute = nil
   Print(L("dailyRouteStopped"))
   UpdateDailyRoutePanel()
+end
+
+local function SetPreviewDetailsText(text)
+  if not mainFrame or not mainFrame.previewDetails then
+    return
+  end
+
+  mainFrame.previewDetails:SetText(text or "")
+
+  if not mainFrame.previewDetailsScrollFrame or not mainFrame.previewDetailsContent then
+    return
+  end
+
+  local visibleHeight = mainFrame.previewDetailsScrollFrame:GetHeight() or 1
+  local textHeight = SafeCall(mainFrame.previewDetails.GetStringHeight, mainFrame.previewDetails) or visibleHeight
+  local contentHeight = math.max(visibleHeight, textHeight + 8)
+
+  mainFrame.previewDetailsContent:SetHeight(contentHeight)
+  mainFrame.previewDetailsScrollFrame:SetVerticalScroll(0)
+end
+
+local function ScrollPreviewDetails(delta)
+  if not mainFrame or not mainFrame.previewDetailsScrollFrame or not mainFrame.previewDetailsContent then
+    return
+  end
+
+  local scrollFrame = mainFrame.previewDetailsScrollFrame
+  local visibleHeight = scrollFrame:GetHeight() or 0
+  local contentHeight = mainFrame.previewDetailsContent:GetHeight() or 0
+  local maxScroll = math.max(0, contentHeight - visibleHeight)
+
+  if maxScroll <= 0 then
+    return
+  end
+
+  local currentScroll = scrollFrame:GetVerticalScroll() or 0
+  local nextScroll = currentScroll - ((delta or 0) * PREVIEW_DETAILS_SCROLL_STEP)
+
+  scrollFrame:SetVerticalScroll(math.max(0, math.min(maxScroll, nextScroll)))
 end
 
 ClearMountPreview = function(message)
@@ -6174,11 +6978,16 @@ ClearMountPreview = function(message)
   end
 
   mainFrame.previewName:SetText(L("previewMount"))
-  mainFrame.previewDetails:SetText(message or L("previewClickToLoad"))
+  SetPreviewDetailsText(message or L("previewClickToLoad"))
 
   if mainFrame.previewWaypointButton then
     mainFrame.previewWaypointButton.mount = nil
     mainFrame.previewWaypointButton:Hide()
+  end
+
+  if mainFrame.previewGuideButton then
+    mainFrame.previewGuideButton.mount = nil
+    mainFrame.previewGuideButton:Hide()
   end
 
   if mainFrame.previewInfoTitle then
@@ -6197,20 +7006,59 @@ ClearMountPreview = function(message)
   end
 end
 
+local function BuildMinimalMountPreviewDetails(mount)
+  if type(mount) ~= "table" then
+    return nil
+  end
+
+  local lines = {}
+  local source = SafeCall(GetSourceDisplayName, mount.source or "Other") or tostring(mount.source or "Other")
+  local zone = SafeCall(GetMountDisplayZone, mount)
+  local boss = LocalizeDataValue(mount.boss)
+  local coordinates = SafeCall(GetMountCoordinates, mount)
+  local tomtom = SafeCall(GetMountTomTomCommand, mount)
+  local note = LocalizeDataValue(mount.note)
+
+  AddGuideSection(lines, L("previewSectionMethod"))
+  AddGuideSectionLine(lines, L("methodLabel"), source)
+
+  if zone or boss or coordinates then
+    AddGuideSection(lines, L("previewSectionLocation"))
+    AddGuideSectionLine(lines, L("zoneLabel"), zone)
+    AddGuideSectionLine(lines, L("unknownBoss"), boss)
+    AddGuideSectionLine(lines, L("coordinatesLabel"), coordinates)
+  end
+
+  if tomtom then
+    AddGuideSection(lines, L("previewSectionReward"))
+    AddGuideSectionLine(lines, L("tomtomLabel"), tomtom)
+  end
+
+  if note and note ~= "" then
+    AddGuideSection(lines, L("previewSectionNotes"))
+    table.insert(lines, "  " .. note)
+  end
+
+  return #lines > 0 and table.concat(lines, "\n") or nil
+end
+
 ShowMountPreview = function(mount)
   if not mainFrame or not mainFrame.previewPanel or not mount then
     ClearMountPreview()
     return
   end
 
-  local displayID = GetMountDisplayID(mount)
-  local details = BuildMountPreviewDetails(mount)
+  local displayID = SafeCall(GetMountDisplayID, mount)
+  local details = SafeCall(BuildMountPreviewDetails, mount)
+  local mountName = SafeCall(GetMountDisplayName, mount) or L("previewMount")
+  local tomtomCommand = SafeCall(GetMountTomTomCommand, mount)
+  local guideURL = SafeCall(GetMountGuideURL, mount)
 
   if not details or details == "" then
-    details = L("previewEmpty")
+    details = BuildMinimalMountPreviewDetails(mount) or L("previewEmpty")
   end
 
-  mainFrame.previewName:SetText(GetMountDisplayName(mount))
+  mainFrame.previewName:SetText(mountName)
   if mainFrame.previewInfoTitle then
     mainFrame.previewInfoTitle:SetText(L("previewFullGuide"))
   end
@@ -6218,15 +7066,32 @@ ShowMountPreview = function(mount)
   if mainFrame.previewWaypointButton then
     mainFrame.previewWaypointButton.mount = mount
 
-    if GetMountTomTomCommand(mount) then
+    if tomtomCommand then
       mainFrame.previewWaypointButton:Show()
     else
       mainFrame.previewWaypointButton:Hide()
     end
   end
 
+  if mainFrame.previewGuideButton then
+    mainFrame.previewGuideButton.mount = mount
+    mainFrame.previewGuideButton:ClearAllPoints()
+
+    if guideURL then
+      if mainFrame.previewWaypointButton and mainFrame.previewWaypointButton:IsShown() then
+        mainFrame.previewGuideButton:SetPoint("RIGHT", mainFrame.previewWaypointButton, "LEFT", -8, 0)
+      else
+        mainFrame.previewGuideButton:SetPoint("BOTTOMRIGHT", mainFrame.previewPanel, "BOTTOMRIGHT", -12, 10)
+      end
+
+      mainFrame.previewGuideButton:Show()
+    else
+      mainFrame.previewGuideButton:Hide()
+    end
+  end
+
   if displayID and mainFrame.previewModel then
-    mainFrame.previewDetails:SetText(details)
+    SetPreviewDetailsText(details)
     mainFrame.previewEmptyText:Hide()
     mainFrame.previewModel:Show()
     mainFrame.previewModel.displayActive = true
@@ -6239,7 +7104,7 @@ ShowMountPreview = function(mount)
     SafeCall(mainFrame.previewModel.SetPosition, mainFrame.previewModel, 0, 0, 0)
     SafeCall(mainFrame.previewModel.SetFacing, mainFrame.previewModel, mainFrame.previewModel.previewFacing)
   else
-    mainFrame.previewDetails:SetText(details .. "\n" .. L("previewNoJournalModel"))
+    SetPreviewDetailsText(details .. "\n" .. L("previewNoJournalModel"))
 
     if mainFrame.previewModel then
       mainFrame.previewModel.displayActive = false
@@ -6462,33 +7327,33 @@ function CreateOptionsPanel(parent)
   panel.checks = {}
 
   table.insert(panel.checks, CreateOptionsCheck(panel, -94, L("optionShowInactiveEvents"), function()
-    return GetAzerColectOption("showInactiveEvents")
+    return GetMountAtlasOption("showInactiveEvents")
   end, function(value)
-    SetAzerColectOption("showInactiveEvents", value)
+    SetMountAtlasOption("showInactiveEvents", value)
   end))
 
   table.insert(panel.checks, CreateOptionsCheck(panel, -152, L("optionNewMountAlerts"), function()
     EnsureDB()
-    return AzerColectDB.newMountAlerts.enabled == true
+    return MountAtlasDB.newMountAlerts.enabled == true
   end, function(value)
     EnsureDB()
-    AzerColectDB.newMountAlerts.enabled = value == true
+    MountAtlasDB.newMountAlerts.enabled = value == true
   end))
 
   table.insert(panel.checks, CreateOptionsCheck(panel, -180, L("optionNewMountSound"), function()
     EnsureDB()
-    return AzerColectDB.newMountAlerts.sound == true
+    return MountAtlasDB.newMountAlerts.sound == true
   end, function(value)
     EnsureDB()
-    AzerColectDB.newMountAlerts.sound = value == true
+    MountAtlasDB.newMountAlerts.sound = value == true
   end))
 
   table.insert(panel.checks, CreateOptionsCheck(panel, -208, L("optionNewMountConfetti"), function()
     EnsureDB()
-    return AzerColectDB.newMountAlerts.confetti == true
+    return MountAtlasDB.newMountAlerts.confetti == true
   end, function(value)
     EnsureDB()
-    AzerColectDB.newMountAlerts.confetti = value == true
+    MountAtlasDB.newMountAlerts.confetti = value == true
   end))
 
   parent.dailyRouteButton = CreateOptionsActionButton(panel, L("dailyRouteStart"), 22, -260, 134, UI_THEME.blue, function()
@@ -6512,17 +7377,17 @@ function CreateOptionsPanel(parent)
   StyleFont(parent.dailyRouteStatus, 10, 0.72, 0.82, 0.95, "OUTLINE")
 
   table.insert(panel.checks, CreateOptionsCheck(panel, -324, L("optionDailyRouteSkipAttempted"), function()
-    return GetAzerColectOption("dailyRouteSkipAttempted")
+    return GetMountAtlasOption("dailyRouteSkipAttempted")
   end, function(value)
-    SetAzerColectOption("dailyRouteSkipAttempted", value)
-    AzerColectRuntime.dailyRoute = nil
+    SetMountAtlasOption("dailyRouteSkipAttempted", value)
+    MountAtlasRuntime.dailyRoute = nil
     UpdateDailyRoutePanel()
   end))
 
   table.insert(panel.checks, CreateOptionsCheck(panel, -352, L("optionDailyRouteAutoWaypoint"), function()
-    return GetAzerColectOption("dailyRouteAutoWaypoint")
+    return GetMountAtlasOption("dailyRouteAutoWaypoint")
   end, function(value)
-    SetAzerColectOption("dailyRouteAutoWaypoint", value)
+    SetMountAtlasOption("dailyRouteAutoWaypoint", value)
   end))
 
   panel.closeButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
@@ -6546,9 +7411,12 @@ function CreateWindow()
     return
   end
 
-  mainFrame = CreateFrame("Frame", "AzerColectFrame", UIParent, "BasicFrameTemplateWithInset")
+  mainFrame = CreateFrame("Frame", "MountAtlasFrame", UIParent, "BasicFrameTemplateWithInset")
   mainFrame:SetSize(FRAME_WIDTH, FRAME_HEIGHT)
   mainFrame:SetPoint("CENTER")
+  mainFrame:SetFrameStrata("DIALOG")
+  mainFrame:SetFrameLevel(60)
+  mainFrame:SetToplevel(true)
   mainFrame:SetMovable(true)
   mainFrame:EnableMouse(true)
   mainFrame:EnableMouseWheel(true)
@@ -6605,15 +7473,15 @@ function CreateWindow()
   StyleFont(mainFrame.subtitleText, 11, 0.95, 0.95, 1, "OUTLINE")
 
   mainFrame.tabs = {
-    today = CreateTabButton(mainFrame, L("modeToday"), "today", 226),
-    weekly = CreateTabButton(mainFrame, L("modeWeekly"), "weekly", 322),
-    all = CreateTabButton(mainFrame, L("modeAll"), "all", 418),
-    favorites = CreateTabButton(mainFrame, L("modeFavorites"), "favorites", 514),
-    achievements = CreateTabButton(mainFrame, L("modeAchievements"), "achievements", 610),
-    sources = CreateTabButton(mainFrame, L("modeSources"), "sources", 706),
-    reputation = CreateTabButton(mainFrame, L("modeReputation"), "reputation", 802),
-    events = CreateTabButton(mainFrame, L("modeEvents"), "events", 898),
-    routes = CreateTabButton(mainFrame, L("modeRoutes"), "routes", 994)
+    today = CreateTabButton(mainFrame, L("modeToday"), "today", CONTENT_LEFT),
+    weekly = CreateTabButton(mainFrame, L("modeWeekly"), "weekly", CONTENT_LEFT + 96),
+    all = CreateTabButton(mainFrame, L("modeAll"), "all", CONTENT_LEFT + 192),
+    favorites = CreateTabButton(mainFrame, L("modeFavorites"), "favorites", CONTENT_LEFT + 288),
+    achievements = CreateTabButton(mainFrame, L("modeAchievements"), "achievements", CONTENT_LEFT + 384),
+    sources = CreateTabButton(mainFrame, L("modeSources"), "sources", CONTENT_LEFT + 480),
+    reputation = CreateTabButton(mainFrame, L("modeReputation"), "reputation", CONTENT_LEFT + 576),
+    events = CreateTabButton(mainFrame, L("modeEvents"), "events", CONTENT_LEFT + 672),
+    routes = CreateTabButton(mainFrame, L("modeRoutes"), "routes", CONTENT_LEFT + 768)
   }
 
   mainFrame.refreshButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
@@ -6880,7 +7748,7 @@ function CreateWindow()
 
     currentSearchText = Trim(self:GetText())
     ResetListScroll()
-    QueueRefreshWindow(AzerColectRuntime.SEARCH_REFRESH_DELAY)
+    QueueRefreshWindow(MountAtlasRuntime.SEARCH_REFRESH_DELAY)
   end)
 
   mainFrame.clearSearchButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
@@ -6930,7 +7798,7 @@ function CreateWindow()
   mainFrame.previewPanel:EnableMouse(true)
   mainFrame.previewPanel:EnableMouseWheel(true)
   mainFrame.previewPanel:SetScript("OnMouseWheel", function(_, delta)
-    ScrollList(delta)
+    ScrollPreviewDetails(delta)
   end)
   DecoratePanel(mainFrame.previewPanel, UI_THEME.panel, UI_THEME.goldSoft, 0.92, 0.62)
 
@@ -6973,26 +7841,49 @@ function CreateWindow()
   mainFrame.previewInfoTitle:SetText(L("previewHowToGet"))
   StyleFont(mainFrame.previewInfoTitle, 10, 1, 0.82, 0.24, "OUTLINE")
 
-  mainFrame.previewDetails = mainFrame.previewPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  mainFrame.previewDetails:SetPoint("TOPLEFT", mainFrame.previewInfoTitle, "BOTTOMLEFT", 0, -5)
+  mainFrame.previewDetailsScrollFrame = CreateFrame("ScrollFrame", nil, mainFrame.previewPanel)
+  mainFrame.previewDetailsScrollFrame:SetPoint("TOPLEFT", mainFrame.previewInfoTitle, "BOTTOMLEFT", 0, -5)
+  mainFrame.previewDetailsScrollFrame:SetSize(PREVIEW_WIDTH - 24, 146)
+  mainFrame.previewDetailsScrollFrame:EnableMouseWheel(true)
+  mainFrame.previewDetailsScrollFrame:SetScript("OnMouseWheel", function(_, delta)
+    ScrollPreviewDetails(delta)
+  end)
+
+  mainFrame.previewDetailsContent = CreateFrame("Frame", nil, mainFrame.previewDetailsScrollFrame)
+  mainFrame.previewDetailsContent:SetSize(PREVIEW_WIDTH - 24, 146)
+  mainFrame.previewDetailsScrollFrame:SetScrollChild(mainFrame.previewDetailsContent)
+
+  mainFrame.previewDetails = mainFrame.previewDetailsContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  mainFrame.previewDetails:SetPoint("TOPLEFT", mainFrame.previewDetailsContent, "TOPLEFT", 0, 0)
   mainFrame.previewDetails:SetWidth(PREVIEW_WIDTH - 24)
-  mainFrame.previewDetails:SetHeight(146)
   mainFrame.previewDetails:SetJustifyH("LEFT")
   mainFrame.previewDetails:SetJustifyV("TOP")
   SafeCall(mainFrame.previewDetails.SetWordWrap, mainFrame.previewDetails, true)
   StyleFont(mainFrame.previewDetails, 9, 0.9, 0.88, 0.78, "OUTLINE")
 
   mainFrame.previewWaypointButton = CreateFrame("Button", nil, mainFrame.previewPanel, "UIPanelButtonTemplate")
-  mainFrame.previewWaypointButton:SetSize(92, 20)
+  mainFrame.previewWaypointButton:SetSize(132, 24)
   mainFrame.previewWaypointButton:SetPoint("BOTTOMRIGHT", mainFrame.previewPanel, "BOTTOMRIGHT", -12, 10)
   mainFrame.previewWaypointButton:SetText(L("buttonWaypoint"))
-  DecorateButton(mainFrame.previewWaypointButton, UI_THEME.blue, 0.18)
+  DecorateButton(mainFrame.previewWaypointButton, UI_THEME.blue, 0.28)
   mainFrame.previewWaypointButton:SetScript("OnClick", function(self)
     if self.mount then
       AddTomTomWaypoint(self.mount)
     end
   end)
   mainFrame.previewWaypointButton:Hide()
+
+  mainFrame.previewGuideButton = CreateFrame("Button", nil, mainFrame.previewPanel, "UIPanelButtonTemplate")
+  mainFrame.previewGuideButton:SetSize(112, 24)
+  mainFrame.previewGuideButton:SetPoint("RIGHT", mainFrame.previewWaypointButton, "LEFT", -8, 0)
+  mainFrame.previewGuideButton:SetText(L("buttonGuide"))
+  DecorateButton(mainFrame.previewGuideButton, UI_THEME.green, 0.28)
+  mainFrame.previewGuideButton:SetScript("OnClick", function(self)
+    if self.mount then
+      ShowMountGuideLink(self.mount)
+    end
+  end)
+  mainFrame.previewGuideButton:Hide()
 
   for i = 1, ROW_COUNT do
     local row = CreateFrame("Frame", nil, mainFrame)
@@ -7049,47 +7940,50 @@ function CreateWindow()
 
     row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     row.name:SetPoint("TOPLEFT", row, "TOPLEFT", 70, -6)
-    row.name:SetWidth(430)
+    row.name:SetWidth(470)
     row.name:SetJustifyH("LEFT")
     SafeCall(row.name.SetWordWrap, row.name, false)
     StyleFont(row.name, 12, 1, 0.83, 0.14, "OUTLINE")
 
     row.details = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.details:SetPoint("TOPLEFT", row, "TOPLEFT", 70, -24)
-    row.details:SetWidth(430)
+    row.details:SetWidth(470)
     row.details:SetJustifyH("LEFT")
     SafeCall(row.details.SetWordWrap, row.details, false)
     StyleFont(row.details, 10, 0.94, 0.94, 0.9, "OUTLINE")
 
     row.note = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.note:SetPoint("TOPLEFT", row, "TOPLEFT", 70, -41)
-    row.note:SetWidth(430)
+    row.note:SetWidth(470)
     row.note:SetJustifyH("LEFT")
     SafeCall(row.note.SetWordWrap, row.note, false)
     StyleFont(row.note, 10, 0.68, 0.74, 0.86)
 
     row.doneButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.doneButton:SetSize(30, 22)
-    row.doneButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -76, 7)
-    DecorateButton(row.doneButton, UI_THEME.blue, 0.18)
+    row.doneButton:SetSize(24, 20)
+    row.doneButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -58, 8)
+    DecorateButton(row.doneButton, UI_THEME.neutral, 0.12)
+    row.doneButton:SetAlpha(0.72)
     row.doneButton:EnableMouseWheel(true)
     row.doneButton:SetScript("OnMouseWheel", function(_, delta)
       ScrollList(delta)
     end)
 
     row.clearButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.clearButton:SetSize(30, 22)
-    row.clearButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -42, 7)
-    DecorateButton(row.clearButton, UI_THEME.orange, 0.18)
+    row.clearButton:SetSize(24, 20)
+    row.clearButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -33, 8)
+    DecorateButton(row.clearButton, UI_THEME.neutral, 0.12)
+    row.clearButton:SetAlpha(0.72)
     row.clearButton:EnableMouseWheel(true)
     row.clearButton:SetScript("OnMouseWheel", function(_, delta)
       ScrollList(delta)
     end)
 
     row.favButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.favButton:SetSize(30, 22)
-    row.favButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 7)
-    DecorateButton(row.favButton, UI_THEME.gold, 0.18)
+    row.favButton:SetSize(24, 20)
+    row.favButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 8)
+    DecorateButton(row.favButton, UI_THEME.neutral, 0.12)
+    row.favButton:SetAlpha(0.72)
     row.favButton:EnableMouseWheel(true)
     row.favButton:SetScript("OnMouseWheel", function(_, delta)
       ScrollList(delta)
@@ -7146,17 +8040,17 @@ function CreateWindow()
 end
 
 function PopulateMountRow(row, mount, listIndex)
-  local attempted = IsAttempted(mount)
-  local collected = HasMount(mount)
-  local favorite = IsFavoriteMount(mount)
-  local unavailableReason = GetMountUnavailableReason(mount)
+  local attempted = SafeCall(IsAttempted, mount) == true
+  local collected = SafeCall(HasMount, mount) == true
+  local favorite = SafeCall(IsFavoriteMount, mount) == true
+  local unavailableReason = SafeCall(GetMountUnavailableReason, mount)
   local reset = resetLabels[mount.reset] or mount.reset or L("unknownReset")
   local source = GetSourceDisplayName(mount.source or L("unknownSource"))
-  local zone = LocalizeDataValue(mount.zone) or L("unknownZone")
+  local zone = SafeCall(GetMountDisplayZone, mount) or L("unknownZone")
   local boss = LocalizeDataValue(mount.boss) or L("unknownBoss")
-  local vendor = GetMountVendor(mount)
-  local mountName = GetMountDisplayName(mount)
-  local note = BuildCompactMountNote(mount, boss, vendor)
+  local vendor = SafeCall(GetMountVendor, mount)
+  local mountName = SafeCall(GetMountDisplayName, mount) or mount.name or L("previewMount")
+  local note = SafeCall(BuildCompactMountNote, mount, boss, vendor) or ""
   local namePrefix = ""
 
   if currentMode == "missingEasy" and listIndex then
@@ -7177,10 +8071,10 @@ function PopulateMountRow(row, mount, listIndex)
 
   row.name:SetText(namePrefix .. mountName)
   row.details:SetText(source .. " | " .. zone .. " | " .. reset)
-  row.note:SetText(note)
+  row.note:SetText(ShortenText(note, 62))
 
   if row.icon then
-    row.icon:SetTexture(GetMountIcon(mount))
+    row.icon:SetTexture(SafeCall(GetMountIcon, mount) or DEFAULT_MOUNT_ICON)
   end
 
   if unavailableReason then
@@ -7225,6 +8119,12 @@ function PopulateMountRow(row, mount, listIndex)
     ToggleFavoriteMount(mount)
     RefreshWindow()
   end)
+  DecorateButton(row.doneButton, attempted and UI_THEME.blue or UI_THEME.neutral, attempted and 0.16 or 0.1)
+  DecorateButton(row.clearButton, UI_THEME.neutral, 0.1)
+  DecorateButton(row.favButton, favorite and UI_THEME.gold or UI_THEME.neutral, favorite and 0.2 or 0.1)
+  row.doneButton:SetAlpha(attempted and 0.86 or 0.66)
+  row.clearButton:SetAlpha(0.58)
+  row.favButton:SetAlpha(favorite and 0.92 or 0.66)
   SetRowHover(row, false)
 
   row:SetScript("OnEnter", function()
@@ -7236,7 +8136,12 @@ function PopulateMountRow(row, mount, listIndex)
   end)
 
   row:SetScript("OnMouseDown", function()
-    ShowMountPreview(mount)
+    local ok, err = pcall(ShowMountPreview, mount)
+
+    if not ok then
+      Print("Preview error: " .. tostring(err))
+      ClearMountPreview(L("previewEmpty"))
+    end
   end)
 
   if unavailableReason then
@@ -7283,7 +8188,7 @@ function PopulateAchievementRow(row, item)
     row.details:SetText((item.expansion or "General") .. " | " .. L("missing") .. " " .. missing .. " | " .. item.done .. "/" .. item.total)
   end
 
-  row.note:SetText(note)
+  row.note:SetText(ShortenText(note, 62))
   if row.icon then
     row.icon:SetTexture(previewMount and GetMountIcon(previewMount) or DEFAULT_ACHIEVEMENT_ICON)
   end
@@ -7311,6 +8216,10 @@ function PopulateAchievementRow(row, item)
     ToggleFavoriteAchievement(item)
     RefreshWindow()
   end)
+  DecorateButton(row.doneButton, UI_THEME.neutral, 0.12)
+  DecorateButton(row.favButton, favorite and UI_THEME.gold or UI_THEME.neutral, favorite and 0.2 or 0.1)
+  row.doneButton:SetAlpha(0.72)
+  row.favButton:SetAlpha(favorite and 0.92 or 0.66)
   SetRowHover(row, false)
 
   row:SetScript("OnEnter", function()
@@ -7323,7 +8232,12 @@ function PopulateAchievementRow(row, item)
 
   row:SetScript("OnMouseDown", function()
     if previewMount then
-      ShowMountPreview(previewMount)
+      local ok, err = pcall(ShowMountPreview, previewMount)
+
+      if not ok then
+        Print("Preview error: " .. tostring(err))
+        ClearMountPreview(L("previewNoAchievementModel"))
+      end
     else
       ClearMountPreview(L("previewNoAchievementModel"))
     end
@@ -7359,7 +8273,7 @@ RefreshWindow = function()
     filterText = filterText .. " | " .. GetWeeklyResetText()
   end
 
-  if AzerColectRuntime.autoCatalogLoading then
+  if MountAtlasRuntime.autoCatalogLoading then
     filterText = filterText .. " | " .. L("catalogLoading")
   end
 
@@ -7505,7 +8419,10 @@ function OpenWindow(mode)
   currentMode = mode or currentMode or "today"
   ApplyModeDefaults(currentMode)
   ResetListScroll()
+  mainFrame:SetFrameStrata("DIALOG")
+  mainFrame:SetFrameLevel(60)
   mainFrame:Show()
+  mainFrame:Raise()
   RefreshWindow()
 end
 
@@ -7551,11 +8468,16 @@ function SetMinimapButtonPosition(angle)
     return
   end
 
-  local radius = 80
+  local minimapSize = Minimap:GetWidth()
+  local radius = ((minimapSize and minimapSize > 0) and (minimapSize * 0.5) or 80) + MINIMAP_BUTTON_OUTER_OFFSET
   local radians = math.rad(angle or 225)
 
   minimapButton:ClearAllPoints()
   minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(radians) * radius, math.sin(radians) * radius)
+end
+
+local function GetMinimapButtonParent()
+  return MinimapCluster or Minimap or UIParent
 end
 
 function ShowMinimapButton()
@@ -7563,14 +8485,14 @@ function ShowMinimapButton()
     return
   end
 
-  minimapButton:SetParent(Minimap)
-  minimapButton:SetSize(32, 32)
-  minimapButton:SetFrameStrata("MEDIUM")
+  minimapButton:SetParent(GetMinimapButtonParent())
+  minimapButton:SetSize(MINIMAP_BUTTON_SIZE, MINIMAP_BUTTON_SIZE)
+  minimapButton:SetFrameStrata("HIGH")
   minimapButton:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 5)
   minimapButton:SetAlpha(1)
   minimapButton:EnableMouse(true)
   minimapButton:Show()
-  SetMinimapButtonPosition(AzerColectDB.minimap.angle)
+  SetMinimapButtonPosition(MountAtlasDB.minimap.angle)
 end
 
 function UpdateMinimapButtonDrag()
@@ -7588,10 +8510,10 @@ function UpdateMinimapButtonDrag()
 
   cursorX = cursorX / scale
   cursorY = cursorY / scale
-  AzerColectDB.minimap = AzerColectDB.minimap or {}
-  AzerColectDB.minimap.angle = math.deg(Atan2(cursorY - centerY, cursorX - centerX))
+  MountAtlasDB.minimap = MountAtlasDB.minimap or {}
+  MountAtlasDB.minimap.angle = math.deg(Atan2(cursorY - centerY, cursorX - centerX))
 
-  SetMinimapButtonPosition(AzerColectDB.minimap.angle)
+  SetMinimapButtonPosition(MountAtlasDB.minimap.angle)
   minimapButton:Show()
 end
 
@@ -7607,7 +8529,7 @@ function CreateMinimapButton()
     return
   end
 
-  local existingButton = _G and _G["AzerColectMinimapButton"]
+  local existingButton = _G and _G["MountAtlasMinimapButton"]
 
   if existingButton then
     minimapButton = existingButton
@@ -7615,18 +8537,37 @@ function CreateMinimapButton()
     return
   end
 
-  minimapButton = CreateFrame("Button", "AzerColectMinimapButton", Minimap)
-  minimapButton:SetSize(32, 32)
-  minimapButton:SetFrameStrata("MEDIUM")
+  minimapButton = CreateFrame("Button", "MountAtlasMinimapButton", GetMinimapButtonParent())
+  minimapButton:SetSize(MINIMAP_BUTTON_SIZE, MINIMAP_BUTTON_SIZE)
+  minimapButton:SetFrameStrata("HIGH")
+  minimapButton:SetClampedToScreen(true)
   minimapButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
   minimapButton:RegisterForDrag("LeftButton")
   minimapButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 
-  minimapButton.icon = minimapButton:CreateTexture(nil, "BACKGROUND")
-  minimapButton.icon:SetSize(22, 22)
+  minimapButton.background = minimapButton:CreateTexture(nil, "BACKGROUND")
+  minimapButton.background:SetSize(MINIMAP_BUTTON_SIZE - 6, MINIMAP_BUTTON_SIZE - 6)
+  minimapButton.background:SetPoint("CENTER", -1, 1)
+  if minimapButton.background.SetColorTexture then
+    minimapButton.background:SetColorTexture(0, 0, 0, 0.9)
+  else
+    minimapButton.background:SetTexture(0, 0, 0, 0.9)
+  end
+
+  minimapButton.icon = minimapButton:CreateTexture(nil, "ARTWORK")
+  minimapButton.icon:SetSize(MINIMAP_BUTTON_ICON_SIZE, MINIMAP_BUTTON_ICON_SIZE)
   minimapButton.icon:SetPoint("CENTER", -1, 1)
   minimapButton.icon:SetTexture(MINIMAP_ICON_TEXTURE)
   minimapButton.icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+
+  if minimapButton.CreateMaskTexture and minimapButton.background.AddMaskTexture and minimapButton.icon.AddMaskTexture then
+    minimapButton.mask = minimapButton:CreateMaskTexture()
+    minimapButton.mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    minimapButton.mask:SetSize(MINIMAP_BUTTON_SIZE - 6, MINIMAP_BUTTON_SIZE - 6)
+    minimapButton.mask:SetPoint("CENTER", -1, 1)
+    minimapButton.background:AddMaskTexture(minimapButton.mask)
+    minimapButton.icon:AddMaskTexture(minimapButton.mask)
+  end
 
   minimapButton.border = minimapButton:CreateTexture(nil, "OVERLAY")
   minimapButton.border:SetSize(53, 53)
@@ -8113,7 +9054,7 @@ addon:SetScript("OnEvent", function(_, event, ...)
       InvalidateMountJournalCaches()
       ScheduleMountCollectionScan(true)
     else
-      InvalidateAzerColectDataCache()
+      InvalidateMountAtlasDataCache()
     end
 
     if mainFrame and mainFrame:IsShown() then
