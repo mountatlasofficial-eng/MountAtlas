@@ -11,27 +11,28 @@ local addon = CreateFrame("Frame")
 addon:RegisterEvent("PLAYER_LOGIN")
 addon:RegisterEvent("PLAYER_ENTERING_WORLD")
 addon:RegisterEvent("PLAYER_LOGOUT")
+addon:RegisterEvent("UI_SCALE_CHANGED")
 
-local ADDON_REVISION = "performance-2026-06-10"
 local ADDON_DISPLAY_NAME = "MountAtlas"
-local ROW_COUNT = 6
-local FRAME_WIDTH = 1240
-local FRAME_HEIGHT = 620
-local SIDEBAR_WIDTH = 158
-local CONTENT_LEFT = 190
-local ROW_WIDTH = 670
-local ROW_HEIGHT = 58
-local ROW_GAP = 7
-local LIST_TOP = -188
-local PREVIEW_WIDTH = 354
-local PREVIEW_HEIGHT = 388
-local PRIORITY_RECOMMENDATION_COUNT = 3
+local ROW_COUNT = 7
+local FRAME_WIDTH = 1100
+local FRAME_HEIGHT = 560
+local SIDEBAR_WIDTH = 142
+local CONTENT_LEFT = 170
+local ROW_WIDTH = 600
+local ROW_HEIGHT = 46
+local ROW_GAP = 4
+local LIST_TOP = -136
+local PREVIEW_WIDTH = 280
+local PREVIEW_HEIGHT = 348
+local PREVIEW_DETAILS_HEIGHT = 112
+local PRIORITY_RECOMMENDATION_COUNT = 2
 local DEFAULT_MOUNT_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local DEFAULT_ACHIEVEMENT_ICON = "Interface\\Icons\\Achievement_General"
 local MINIMAP_ICON_TEXTURE = "Interface\\AddOns\\MountAtlas\\Textures\\MountAtlas"
 local MINIMAP_BUTTON_SIZE = 34
 local MINIMAP_BUTTON_ICON_SIZE = 22
-local MINIMAP_BUTTON_OUTER_OFFSET = 10
+local MINIMAP_BUTTON_OUTER_OFFSET = -8
 local ACTION_ICON_DONE = "Interface\\Buttons\\UI-CheckBox-Check"
 local ACTION_ICON_CLEAR = "Interface\\Buttons\\UI-GroupLoot-Pass-Up"
 local ACTION_ICON_FAVORITE = "Interface\\COMMON\\ReputationStar"
@@ -40,16 +41,20 @@ local READABILITY_FONT_BONUS = 2
 local NEW_MOUNT_ALERT_DURATION = 7
 local DAILY_ROUTE_LIMIT = 5
 local PREVIEW_DETAILS_SCROLL_STEP = 28
-local AUTO_CATALOG_BATCH_SIZE = 12
-local AUTO_CATALOG_BATCH_DELAY = 0.02
+local AUTO_CATALOG_BATCH_SIZE = 6
+local AUTO_CATALOG_BATCH_DELAY = 0.06
+MOUNT_ATLAS_JOURNAL_CACHE_BATCH_SIZE = 15
+MOUNT_ATLAS_JOURNAL_CACHE_BATCH_DELAY = 0.05
+MOUNT_ATLAS_COLLECTION_SCAN_BATCH_SIZE = 18
+MOUNT_ATLAS_COLLECTION_SCAN_BATCH_DELAY = 0.05
 local currentMode = "today"
 local currentPage = 1
 local currentScrollOffset = 0
-local filtersAdvancedOpen = false
 local mainFrame
 local minimapButton
 local rows = {}
 local lastMinimapError
+local selectedPreviewMount
 
 local HandleSlashCommand
 local RestoreMinimapButton
@@ -82,7 +87,7 @@ RegisterSlashCommands = function()
       return HandleSlashCommand(msg)
     end
 
-    Print("debug: " .. ADDON_REVISION .. ", slash registrado, Core.lua no termino de cargar.")
+    Print("Loading...")
   end
 
   SLASH_MOUNTATLAS1 = "/mountatlas"
@@ -95,7 +100,7 @@ RegisterSlashCommands = function()
       return RestoreMinimapButton()
     end
 
-    Print("debug: " .. ADDON_REVISION .. ", minimapa aun no disponible.")
+    Print(L("minimapUnavailable"))
   end
 
   SLASH_MOUNTATLASMINIMAP1 = "/mountatlasmini"
@@ -117,11 +122,13 @@ local resetLabels = {
 local modeLabels = {
   today = L("modeToday"),
   weekly = L("modeWeekly"),
+  pinned = L("modePinned"),
   all = L("modeAll"),
   favorites = L("modeFavorites"),
   achievements = L("modeAchievements"),
   sources = L("modeSources"),
   reputation = L("modeReputation"),
+  tradingpost = L("modeTradingPost"),
   events = L("modeEvents"),
   routes = L("modeRoutes"),
   missingEasy = L("modeMissingEasy")
@@ -147,11 +154,13 @@ local UI_THEME = {
 local MODE_COLORS = {
   today = UI_THEME.cyan,
   weekly = UI_THEME.purple,
+  pinned = UI_THEME.gold,
   all = UI_THEME.gold,
   favorites = { 1, 0.62, 0.08 },
   achievements = UI_THEME.green,
   sources = UI_THEME.blue,
   reputation = UI_THEME.purple,
+  tradingpost = UI_THEME.gold,
   events = UI_THEME.red,
   routes = UI_THEME.orange,
   missingEasy = UI_THEME.green
@@ -182,6 +191,7 @@ local EVENT_ALIASES = {
 
 local expansionFilterOptions = {
   { value = "all", label = L("optionAll") },
+  { value = "Trading Post", label = L("expansionTradingPost") },
   { value = "Classic", label = "Classic" },
   { value = "Burning Crusade", label = "BC" },
   { value = "Wrath", label = "Wrath" },
@@ -203,25 +213,101 @@ local sourceFilterOptions = {
   { value = "World boss", label = L("sourceWorldBoss") },
   { value = "World quest", label = L("sourceWorldQuest") },
   { value = "Rare", label = L("sourceRare") },
+  { value = "Island Expedition", label = L("sourceIslandExpedition") },
+  { value = "Torghast", label = L("sourceTorghast") },
   { value = "Achievement", label = L("sourceAchievement") },
   { value = "Delves", label = L("sourceDelves") },
+  { value = "Trading Post", label = L("sourceTradingPost") },
   { value = "Vendor", label = L("sourceVendor") },
   { value = "Quest", label = L("sourceQuest") },
   { value = "Reputation", label = L("sourceReputation") },
+  { value = "PvP", label = L("sourcePvP") },
+  { value = "Class", label = L("sourceClass") },
   { value = "Event", label = L("sourceEvent") },
   { value = "Profession", label = L("sourceProfession") },
   { value = "Secret", label = L("sourceSecret") },
+  { value = "Black Market", label = L("sourceBlackMarket") },
+  { value = "Shop", label = L("sourceShop") },
+  { value = "Promotion", label = L("sourcePromotion") },
+  { value = "Collector's Edition", label = L("sourceEdition") },
+  { value = "TCG", label = L("sourceBmahTcg") },
+  { value = "Limited Time", label = L("sourceLimitedTime") },
+  { value = "Unknown", label = L("sourceUnknownSpecial") },
+  { value = "Legacy", label = L("sourceLegacy") },
   { value = "Other", label = L("sourceOther") }
+}
+
+local dropSourceFilterOptions = {
+  { value = "all", label = L("optionAll") },
+  { value = "Dungeon", label = L("sourceDungeon") },
+  { value = "Raid", label = L("sourceRaid") },
+  { value = "World boss", label = L("sourceWorldBoss") },
+  { value = "World quest", label = L("sourceWorldQuest") },
+  { value = "Rare", label = L("sourceRare") },
+  { value = "Island Expedition", label = L("sourceIslandExpedition") },
+  { value = "Torghast", label = L("sourceTorghast") },
+  { value = "Delves", label = L("sourceDelves") }
+}
+
+local questSourceFilterOptions = {
+  { value = "all", label = L("optionAll") },
+  { value = "Quest", label = L("sourceQuest") },
+  { value = "World quest", label = L("sourceWorldQuest") },
+  { value = "Daily quest", label = L("sourceDailyQuest") }
+}
+
+local achievementSourceFilterOptions = {
+  { value = "all", label = L("optionAll") },
+  { value = "Achievement", label = L("sourceAchievement") },
+  { value = "Raid Achievement", label = L("sourceRaid") .. " " .. L("sourceAchievement") },
+  { value = "Dungeon Achievement", label = L("sourceDungeon") .. " " .. L("sourceAchievement") },
+  { value = "Delves Achievement", label = L("sourceDelves") .. " " .. L("sourceAchievement") }
+}
+
+local sourceGroupOptions = {
+  { value = "all", label = L("optionAll") },
+  { value = "drop", label = L("sourceGroupDrop") },
+  { value = "vendor", label = L("sourceVendor") },
+  { value = "quest", label = L("sourceQuest") },
+  { value = "reputation", label = L("sourceReputation") },
+  { value = "pvp", label = L("sourcePvP") },
+  { value = "class", label = L("sourceClass") },
+  { value = "tradingpost", label = L("sourceTradingPost") },
+  { value = "shop", label = L("sourceShop") },
+  { value = "promotion", label = L("sourcePromotion") },
+  { value = "edition", label = L("sourceEdition") },
+  { value = "bmah", label = L("sourceBmahTcg") },
+  { value = "limited", label = L("sourceLimitedTime") },
+  { value = "unknown", label = L("sourceUnknownSpecial") },
+  { value = "achievement", label = L("sourceAchievement") },
+  { value = "event", label = L("sourceEvent") },
+  { value = "profession", label = L("sourceProfession") },
+  { value = "secret", label = L("sourceSecret") },
+  { value = "legacy", label = L("sourceLegacy") },
+  { value = "other", label = L("sourceOther") }
 }
 
 local sourceModeOptions = {
   { value = "Vendor", label = L("sourceVendor") },
+  { value = "Trading Post", label = L("sourceTradingPost") },
   { value = "Achievement", label = L("sourceAchievement") },
   { value = "Raid", label = L("sourceRaid") },
   { value = "Dungeon", label = L("sourceDungeon") },
+  { value = "Island Expedition", label = L("sourceIslandExpedition") },
+  { value = "Torghast", label = L("sourceTorghast") },
   { value = "Reputation", label = L("sourceReputation") },
+  { value = "PvP", label = L("sourcePvP") },
+  { value = "Class", label = L("sourceClass") },
   { value = "Event", label = L("sourceEvent") },
   { value = "Profession", label = L("sourceProfession") },
+  { value = "Black Market", label = L("sourceBlackMarket") },
+  { value = "Shop", label = L("sourceShop") },
+  { value = "Promotion", label = L("sourcePromotion") },
+  { value = "Collector's Edition", label = L("sourceEdition") },
+  { value = "TCG", label = L("sourceBmahTcg") },
+  { value = "Limited Time", label = L("sourceLimitedTime") },
+  { value = "Unknown", label = L("sourceUnknownSpecial") },
+  { value = "Legacy", label = L("sourceLegacy") },
   { value = "Other", label = L("sourceOther") },
   { value = "all", label = L("optionAll") }
 }
@@ -233,14 +319,18 @@ local collectionFilterOptions = {
 }
 
 local currentExpansionFilter = "all"
+local currentSourceGroupFilter = "all"
 local currentSourceFilter = "all"
 local currentCollectionFilter = "missing"
 local currentSearchText = ""
+local filtersBeforePinnedMode
 MountAtlasRuntime = MountAtlasRuntime or {
   cacheRevision = 0,
   lastCharacterSnapshotAt = 0,
   CHARACTER_SNAPSHOT_THROTTLE = 8,
-  SEARCH_REFRESH_DELAY = 0.15
+  SEARCH_REFRESH_DELAY = 0.15,
+  preloading = false,
+  mountJournalNameCacheReady = false
 }
 MountAtlasRuntime.cacheRevision = MountAtlasRuntime.cacheRevision or 0
 MountAtlasRuntime.lastCharacterSnapshotAt = MountAtlasRuntime.lastCharacterSnapshotAt or 0
@@ -260,7 +350,15 @@ local function Trim(text)
 end
 
 local function Normalize(text)
-  local value = string.lower(Trim(text))
+  local raw = Trim(tostring(text or ""))
+
+  MountAtlasRuntime.normalizeCache = MountAtlasRuntime.normalizeCache or {}
+
+  if MountAtlasRuntime.normalizeCache[raw] ~= nil then
+    return MountAtlasRuntime.normalizeCache[raw]
+  end
+
+  local value = string.lower(raw)
 
   value = value:gsub("\195\129", "a"):gsub("\195\161", "a")
   value = value:gsub("\195\137", "e"):gsub("\195\169", "e")
@@ -269,6 +367,8 @@ local function Normalize(text)
   value = value:gsub("\195\154", "u"):gsub("\195\186", "u")
   value = value:gsub("\195\156", "u"):gsub("\195\188", "u")
   value = value:gsub("\195\145", "n"):gsub("\195\177", "n")
+
+  MountAtlasRuntime.normalizeCache[raw] = value
 
   return value
 end
@@ -328,6 +428,7 @@ function InvalidateMountAtlasDataCache()
   MountAtlasRuntime.expansionProgressStats = nil
   MountAtlasRuntime.priorityPlanCacheKey = nil
   MountAtlasRuntime.priorityPlanCache = nil
+  MountAtlasRuntime.configuredProgressRequirementsCache = nil
 end
 
 function InvalidateMountJournalCaches()
@@ -337,6 +438,12 @@ function InvalidateMountJournalCaches()
   MountAtlasRuntime.autoCatalogMountIDs = nil
   MountAtlasRuntime.autoCatalogConfiguredMountIDs = nil
   MountAtlasRuntime.autoCatalogIndex = nil
+  MountAtlasRuntime.mountJournalNameCacheReady = false
+  MountAtlasRuntime.mountJournalNameCacheBuilding = nil
+  MountAtlasRuntime.mountJournalNameCacheMountIDs = nil
+  MountAtlasRuntime.mountJournalNameCacheIndex = nil
+  MountAtlasRuntime.journalCollectionTotal = nil
+  MountAtlasRuntime.journalCollectionCollected = nil
   MountAtlasRuntime.mountJournalNameCache = nil
   MountAtlasRuntime.mountJournalSpellCache = nil
   MountAtlasRuntime.collectedMountNameCache = nil
@@ -346,9 +453,18 @@ function InvalidateMountJournalCaches()
   MountAtlasRuntime.mountDisplayIDCache = nil
   MountAtlasRuntime.journalMountInfoCache = nil
   MountAtlasRuntime.journalMountExtraCache = nil
+  MountAtlasRuntime.journalMountInfoMissCache = nil
   MountAtlasRuntime.mountSearchTextCache = nil
   MountAtlasRuntime.unavailableReasonCache = nil
   InvalidateMountAtlasDataCache()
+end
+
+function MountAtlasQueueRuntimeTask(delay, callback)
+  if C_Timer and C_Timer.After then
+    C_Timer.After(delay or 0, callback)
+  else
+    callback()
+  end
 end
 
 function QueueRefreshWindow(delay)
@@ -361,9 +477,10 @@ function QueueRefreshWindow(delay)
   end
 
   MountAtlasRuntime.refreshQueued = true
+  local refreshDelay = math.max(tonumber(delay) or 0.12, 0.12)
 
   if C_Timer and C_Timer.After then
-    C_Timer.After(delay or 0.05, function()
+    C_Timer.After(refreshDelay, function()
       MountAtlasRuntime.refreshQueued = false
 
       if mainFrame and mainFrame:IsShown() and RefreshWindow then
@@ -551,25 +668,43 @@ local zoneExpansionMap = {
   ["Spires of Arak"] = "Draenor",
   ["Nagrand"] = "Draenor",
   ["Tanaan Jungle"] = "Draenor",
+  ["Ashran"] = "Draenor",
+  ["Stormshield"] = "Draenor",
+  ["Warspear"] = "Draenor",
+  ["Garrison"] = "Draenor",
+  ["Frostwall"] = "Draenor",
+  ["Lunarfall"] = "Draenor",
   ["Highmaul"] = "Draenor",
   ["Blackrock Foundry"] = "Draenor",
   ["Hellfire Citadel"] = "Draenor",
   ["Broken Isles"] = "Legion",
+  ["Dalaran (Broken Isles)"] = "Legion",
+  ["Margoss's Retreat"] = "Legion",
   ["Azsuna"] = "Legion",
   ["Val'sharah"] = "Legion",
   ["Highmountain"] = "Legion",
   ["Stormheim"] = "Legion",
   ["Suramar"] = "Legion",
   ["Broken Shore"] = "Legion",
+  ["Mage Tower"] = "Legion",
+  ["Class Hall"] = "Legion",
   ["Argus"] = "Legion",
   ["Mac'Aree"] = "Legion",
   ["Antoran Wastes"] = "Legion",
   ["Krokuun"] = "Legion",
+  ["Legion dungeons"] = "Legion",
+  ["Legion raids"] = "Legion",
+  ["Emerald Nightmare"] = "Legion",
+  ["The Nighthold"] = "Legion",
+  ["Emerald Nightmare / Nighthold"] = "Legion",
   ["Tomb of Sargeras"] = "Legion",
   ["Antorus"] = "Legion",
+  ["Antorus, the Burning Throne"] = "Legion",
   ["Return to Karazhan"] = "Legion",
   ["Kul Tiras"] = "BFA",
   ["Zandalar"] = "BFA",
+  ["Boralus"] = "BFA",
+  ["Dazar'alor"] = "BFA",
   ["Tiragarde Sound"] = "BFA",
   ["Drustvar"] = "BFA",
   ["Stormsong Valley"] = "BFA",
@@ -578,9 +713,31 @@ local zoneExpansionMap = {
   ["Vol'dun"] = "BFA",
   ["Nazjatar"] = "BFA",
   ["Mechagon"] = "BFA",
+  ["Freehold"] = "BFA",
+  ["Kings' Rest"] = "BFA",
+  ["The Underrot"] = "BFA",
+  ["Operation: Mechagon"] = "BFA",
+  ["Uldir"] = "BFA",
   ["Battle of Dazar'alor"] = "BFA",
   ["Ny'alotha"] = "BFA",
+  ["Ny'alotha, the Waking City"] = "BFA",
+  ["The Eternal Palace"] = "BFA",
+  ["Battle for Azeroth achievements"] = "BFA",
+  ["Battle for Azeroth dungeons"] = "BFA",
+  ["Battle for Azeroth raids"] = "BFA",
+  ["Battle for Azeroth war campaign"] = "BFA",
+  ["Battle for Azeroth Mythic+"] = "BFA",
+  ["Battle for Azeroth pre-launch event"] = "BFA",
+  ["Allied Races"] = "BFA",
+  ["Warfront service medal vendor"] = "BFA",
+  ["Arathi Highlands Warfront"] = "BFA",
+  ["Darkshore Warfront"] = "BFA",
+  ["Vale of Eternal Blossoms assault"] = "BFA",
+  ["Uldum assault"] = "BFA",
+  ["Island Expeditions"] = "BFA",
+  ["Horrific Visions"] = "BFA",
   ["Shadowlands"] = "Shadowlands",
+  ["Oribos"] = "Shadowlands",
   ["Bastion"] = "Shadowlands",
   ["Maldraxxus"] = "Shadowlands",
   ["Ardenweald"] = "Shadowlands",
@@ -588,6 +745,16 @@ local zoneExpansionMap = {
   ["The Maw"] = "Shadowlands",
   ["Korthia"] = "Shadowlands",
   ["Zereth Mortis"] = "Shadowlands",
+  ["Torghast"] = "Shadowlands",
+  ["Covenant Adventures"] = "Shadowlands",
+  ["Shadowlands achievements"] = "Shadowlands",
+  ["Shadowlands dungeons"] = "Shadowlands",
+  ["Shadowlands raids"] = "Shadowlands",
+  ["Shadowlands Mythic+"] = "Shadowlands",
+  ["The Necrotic Wake"] = "Shadowlands",
+  ["Plaguefall"] = "Shadowlands",
+  ["Tazavesh, the Veiled Market"] = "Shadowlands",
+  ["Castle Nathria"] = "Shadowlands",
   ["Sanctum of Domination"] = "Shadowlands",
   ["Sepulcher of the First Ones"] = "Shadowlands",
   ["Dragon Isles"] = "Dragonflight",
@@ -596,11 +763,26 @@ local zoneExpansionMap = {
   ["The Azure Span"] = "Dragonflight",
   ["Thaldraszus"] = "Dragonflight",
   ["Valdrakken"] = "Dragonflight",
+  ["Iskaara"] = "Dragonflight",
   ["Forbidden Reach"] = "Dragonflight",
   ["The Forbidden Reach"] = "Dragonflight",
   ["Zaralek Cavern"] = "Dragonflight",
   ["Emerald Dream"] = "Dragonflight",
+  ["Dreamsurge zones"] = "Dragonflight",
+  ["Dragon Isles storms"] = "Dragonflight",
+  ["Dragonflight storms"] = "Dragonflight",
+  ["Dragonflight dungeons"] = "Dragonflight",
+  ["Dragonflight Mythic+"] = "Dragonflight",
+  ["Vault of the Incarnates"] = "Dragonflight",
+  ["Aberrus"] = "Dragonflight",
+  ["Aberrus, the Shadowed Crucible"] = "Dragonflight",
   ["Amirdrassil"] = "Dragonflight",
+  ["Amirdrassil, the Dream's Hope"] = "Dragonflight",
+  ["Dawn of the Infinite"] = "Dragonflight",
+  ["Timewalking"] = "Dragonflight",
+  ["Time Rifts"] = "Dragonflight",
+  ["Azerothian Archives"] = "Dragonflight",
+  ["Gilneas"] = "Dragonflight",
   ["Khaz Algar"] = "The War Within",
   ["Isle of Dorn"] = "The War Within",
   ["The Ringing Deeps"] = "The War Within",
@@ -609,14 +791,26 @@ local zoneExpansionMap = {
   ["Dornogal"] = "The War Within",
   ["Siren Isle"] = "The War Within",
   ["Undermine"] = "The War Within",
+  ["Khaz Algar Delves"] = "The War Within",
+  ["The War Within Delves"] = "The War Within",
+  ["The Stonevault"] = "The War Within",
+  ["Darkflame Cleft"] = "The War Within",
   ["Nerub-ar Palace"] = "The War Within",
   ["Liberation of Undermine"] = "The War Within",
+  ["Manaforge Omega"] = "The War Within",
+  ["K'aresh"] = "The War Within",
+  ["Horrific Visions Revisited"] = "The War Within",
+  ["The War Within pre-launch event"] = "The War Within",
   ["Quel'Thalas"] = "Midnight",
   ["Harandar"] = "Midnight",
   ["Voidstorm"] = "Midnight",
+  ["Midnight"] = "Midnight",
   ["Midnight Delves"] = "Midnight",
   ["Midnight Dungeons"] = "Midnight",
-  ["Midnight Raids"] = "Midnight"
+  ["Midnight Raids"] = "Midnight",
+  ["Midnight Prey"] = "Midnight",
+  ["Windrunner's Spire"] = "Midnight",
+  ["Midnight pre-launch event"] = "Midnight"
 }
 
 local reputationExpansionMap = {
@@ -723,6 +917,9 @@ local reputationExpansionMap = {
   ["Los Augustos Celestiales"] = "Pandaria",
   ["The Klaxxi"] = "Pandaria",
   ["Klaxxi"] = "Pandaria",
+  ["The Lorewalkers"] = "Pandaria",
+  ["Lorewalkers"] = "Pandaria",
+  ["Los Eremitas"] = "Pandaria",
   ["Emperor Shaohao"] = "Pandaria",
   ["Emperador Shaohao"] = "Pandaria",
   ["Operation: Shieldwall"] = "Pandaria",
@@ -764,6 +961,8 @@ local reputationExpansionMap = {
   ["Nightfallen"] = "Legion",
   ["Caidos de la Noche"] = "Legion",
   ["Valarjar"] = "Legion",
+  ["The Wardens"] = "Legion",
+  ["Wardens"] = "Legion",
   ["Armies of Legionfall"] = "Legion",
   ["Ejercitos del Ocaso de la Legion"] = "Legion",
   ["Army of the Light"] = "Legion",
@@ -854,7 +1053,13 @@ local reputationExpansionMap = {
   ["The Cartels of Undermine"] = "The War Within",
   ["Cartels of Undermine"] = "The War Within",
   ["Los Carteles de Minahonda"] = "The War Within",
+  ["Blackwater Cartel"] = "The War Within",
+  ["Steamwheedle Cartel"] = "The War Within",
+  ["Venture Company"] = "The War Within",
+  ["Darkfuse Solutions"] = "The War Within",
   ["Gallagio Loyalty Rewards Club"] = "The War Within",
+  ["Manaforge Vandals"] = "The War Within",
+  ["K'aresh Trust"] = "The War Within",
   ["Flame's Radiance"] = "The War Within",
   ["Flames Radiance"] = "The War Within"
 }
@@ -962,6 +1167,35 @@ function FindOptionValue(options, query)
     secretos = "Secret",
     secret = "Secret",
     secrets = "Secret",
+    trading = "Trading Post",
+    tradingpost = "Trading Post",
+    ["trading post"] = "Trading Post",
+    puesto = "Trading Post",
+    ["puesto comercial"] = "Trading Post",
+    tienda = "shop",
+    shop = "shop",
+    store = "shop",
+    promocion = "promotion",
+    promociones = "promotion",
+    promotion = "promotion",
+    promotions = "promotion",
+    coleccionista = "edition",
+    collector = "edition",
+    collectors = "edition",
+    edition = "edition",
+    edicion = "edition",
+    bmah = "bmah",
+    mercado = "bmah",
+    ["mercado negro"] = "bmah",
+    tcg = "bmah",
+    temporal = "limited",
+    temporales = "limited",
+    limited = "limited",
+    ["limited time"] = "limited",
+    remix = "limited",
+    plunderstorm = "limited",
+    desconocido = "unknown",
+    unknown = "unknown",
     otro = "Other",
     otros = "Other",
     other = "Other",
@@ -1066,6 +1300,278 @@ function SourceMatches(source, filter)
   return string.find(cleanSource, cleanFilter, 1, true) ~= nil
 end
 
+local function GetSourceGroup(source)
+  local cleanSource = Normalize(source)
+
+  if cleanSource == "shop"
+    or cleanSource == "store"
+    or cleanSource == "in-game shop"
+    or cleanSource == "in game shop"
+    or cleanSource == "blizzard store"
+    or cleanSource == "battle.net store"
+    or cleanSource == "tienda" then
+    return "shop"
+  end
+
+  if cleanSource == "promotion"
+    or cleanSource == "promocion"
+    or cleanSource == "promocion"
+    or cleanSource == "promotional" then
+    return "promotion"
+  end
+
+  if cleanSource == "collector's edition"
+    or cleanSource == "collectors edition"
+    or cleanSource == "collector edition"
+    or cleanSource == "epic edition"
+    or cleanSource == "annual subscription" then
+    return "edition"
+  end
+
+  if cleanSource == "trading post"
+    or cleanSource == "tradingpost"
+    or cleanSource == "puesto comercial"
+    or string.find(cleanSource, "trading post", 1, true)
+    or string.find(cleanSource, "puesto comercial", 1, true) then
+    return "tradingpost"
+  end
+
+  if string.find(cleanSource, "achievement", 1, true) then
+    return "achievement"
+  end
+
+  if cleanSource == "dungeon"
+    or cleanSource == "raid"
+    or cleanSource == "world boss"
+    or cleanSource == "rare"
+    or cleanSource == "island expedition"
+    or cleanSource == "island expeditions"
+    or cleanSource == "torghast"
+    or cleanSource == "delves"
+    or string.find(cleanSource, "dungeon", 1, true)
+    or string.find(cleanSource, "raid", 1, true)
+    or string.find(cleanSource, "rare", 1, true)
+    or string.find(cleanSource, "island expedition", 1, true)
+    or string.find(cleanSource, "torghast", 1, true) then
+    return "drop"
+  end
+
+  if cleanSource == "vendor" then
+    return "vendor"
+  end
+
+  if cleanSource == "quest"
+    or cleanSource == "world quest"
+    or cleanSource == "daily quest"
+    or string.find(cleanSource, "quest", 1, true) then
+    return "quest"
+  end
+
+  if cleanSource == "reputation" then
+    return "reputation"
+  end
+
+  if cleanSource == "pvp"
+    or cleanSource == "player versus player"
+    or cleanSource == "player vs player"
+    or string.find(cleanSource, "mark of honor", 1, true) then
+    return "pvp"
+  end
+
+  if cleanSource == "class"
+    or cleanSource == "clase"
+    or string.find(cleanSource, "class", 1, true) then
+    return "class"
+  end
+
+  if cleanSource == "achievement" then
+    return "achievement"
+  end
+
+  if cleanSource == "event" then
+    return "event"
+  end
+
+  if cleanSource == "profession" then
+    return "profession"
+  end
+
+  if cleanSource == "secret" then
+    return "secret"
+  end
+
+  if cleanSource == "black market"
+    or cleanSource == "black market auction house"
+    or cleanSource == "bmah"
+    or cleanSource == "tcg"
+    or cleanSource == "trading card game" then
+    return "bmah"
+  end
+
+  if cleanSource == "limited time"
+    or cleanSource == "temporal"
+    or cleanSource == "remix"
+    or cleanSource == "plunderstorm" then
+    return "limited"
+  end
+
+  if cleanSource == "unknown"
+    or cleanSource == "desconocido" then
+    return "unknown"
+  end
+
+  if cleanSource == "legacy"
+    or cleanSource == "legado" then
+    return "legacy"
+  end
+
+  return "other"
+end
+
+local function AppendSpecialContext(parts, value)
+  if value == nil or value == "" then
+    return
+  end
+
+  if type(value) == "table" then
+    for _, item in pairs(value) do
+      AppendSpecialContext(parts, item)
+    end
+
+    return
+  end
+
+  table.insert(parts, tostring(value))
+end
+
+local function GetMountSpecialGroup(mount)
+  if type(mount) ~= "table" then
+    return nil
+  end
+
+  local explicitCategory = Normalize(mount.specialCategory or mount.specialFilter or mount.availabilityCategory or "")
+  local explicitAliases = {
+    shop = "shop",
+    store = "shop",
+    tienda = "shop",
+    promotion = "promotion",
+    promocion = "promotion",
+    edition = "edition",
+    collector = "edition",
+    coleccionista = "edition",
+    tradingpost = "tradingpost",
+    ["trading post"] = "tradingpost",
+    bmah = "bmah",
+    tcg = "bmah",
+    limited = "limited",
+    temporal = "limited",
+    remix = "limited",
+    unknown = "unknown",
+    desconocido = "unknown"
+  }
+
+  if explicitAliases[explicitCategory] then
+    return explicitAliases[explicitCategory]
+  end
+
+  local parts = {}
+
+  AppendSpecialContext(parts, mount.source or "Other")
+  AppendSpecialContext(parts, mount.journalSource)
+  AppendSpecialContext(parts, mount.sourceText)
+  AppendSpecialContext(parts, mount.description)
+  AppendSpecialContext(parts, mount.note)
+  AppendSpecialContext(parts, mount.method)
+  AppendSpecialContext(parts, mount.requirement)
+  AppendSpecialContext(parts, mount.requirements)
+  AppendSpecialContext(parts, mount.boss)
+  AppendSpecialContext(parts, mount.vendor)
+  AppendSpecialContext(parts, mount.zone)
+  AppendSpecialContext(parts, mount.eventName)
+  AppendSpecialContext(parts, mount.reset)
+
+  local cleanText = Normalize(table.concat(parts, " "))
+  local sourceGroup = GetSourceGroup(mount.source or "Other")
+
+  if sourceGroup == "tradingpost"
+    or TextContainsAny(cleanText, "trading post", "tradingpost", "puesto comercial") then
+    return "tradingpost"
+  end
+
+  if sourceGroup == "bmah"
+    or TextContainsAny(cleanText, "black market", "black market auction house", "bmah", "trading card game", "tcg", "juego de cartas") then
+    return "bmah"
+  end
+
+  if sourceGroup == "shop"
+    or TextContainsAny(cleanText, "in-game shop", "in game shop", "in-game store", "in game store", "blizzard shop", "blizzard store", "battle.net shop", "battle.net store", "world of warcraft shop", "tienda del juego", "tienda de blizzard") then
+    return "shop"
+  end
+
+  if sourceGroup == "edition"
+    or TextContainsAny(cleanText, "collector's edition", "collectors edition", "epic edition", "heroic edition", "annual subscription", "edicion de coleccionista") then
+    return "edition"
+  end
+
+  if sourceGroup == "promotion"
+    or TextContainsAny(cleanText, "promotion", "promotional", "promocion", "prime gaming", "twitch drop", "recruit-a-friend", "recluta a un amigo", "mountain dew", "fanta", "razer", "steelseries", "pringles", "hearthstone", "heroes of the storm", "hots", "warcraft iii", "diablo iv") then
+    return "promotion"
+  end
+
+  if sourceGroup == "limited"
+    or mount.reset == "event"
+    or TextContainsAny(cleanText, "limited time", "limited-time", "remix", "plunderstorm", "turbulent timeways", "timewalking", "anniversary", "aniversario", "pre-launch", "prelaunch", "pre lanzamiento") then
+    return "limited"
+  end
+
+  if sourceGroup == "unknown"
+    or TextContainsAny(cleanText, "unknown", "desconocido", "pendiente de confirmacion") then
+    return "unknown"
+  end
+end
+
+local function GetSubSourceOptions()
+  if currentSourceGroupFilter == "drop" then
+    return dropSourceFilterOptions
+  end
+
+  if currentSourceGroupFilter == "quest" then
+    return questSourceFilterOptions
+  end
+
+  if currentSourceGroupFilter == "achievement" then
+    return achievementSourceFilterOptions
+  end
+
+  if currentSourceGroupFilter == "all" then
+    return sourceFilterOptions
+  end
+
+  return {
+    { value = "all", label = L("optionAll") }
+  }
+end
+
+local function SourceGroupMatches(source, filter)
+  if filter == "all" then
+    return true
+  end
+
+  local cleanFilter = Normalize(filter)
+
+  if type(source) == "table" then
+    local specialGroup = GetMountSpecialGroup(source)
+
+    if specialGroup and specialGroup == cleanFilter then
+      return true
+    end
+
+    return GetSourceGroup(source.source or "Other") == cleanFilter
+  end
+
+  return GetSourceGroup(source) == Normalize(filter)
+end
+
 function ExpansionMatches(expansion, filter)
   if filter == "all" then
     return true
@@ -1109,8 +1615,10 @@ function GetJournalMountInfo(mountID)
 
   MountAtlasRuntime.journalMountInfoCache = MountAtlasRuntime.journalMountInfoCache or {}
 
-  if MountAtlasRuntime.journalMountInfoCache[mountID] then
-    return MountAtlasRuntime.journalMountInfoCache[mountID]
+  if MountAtlasRuntime.journalMountInfoCache[mountID] ~= nil then
+    local cachedInfo = MountAtlasRuntime.journalMountInfoCache[mountID]
+
+    return cachedInfo ~= false and cachedInfo or nil
   end
 
   local name, spellID, icon, isActive, isUsable, sourceType,
@@ -1118,6 +1626,7 @@ function GetJournalMountInfo(mountID)
     isCollected = SafeCall(C_MountJournal.GetMountInfoByID, mountID)
 
   if not name or name == "" then
+    MountAtlasRuntime.journalMountInfoCache[mountID] = false
     return nil
   end
 
@@ -1219,13 +1728,13 @@ function BuildJournalSourceTypeMap()
   SetEnumSourceType(sourceMap, enumTable, "Achievement", "Achievement")
   SetEnumSourceType(sourceMap, enumTable, "Event", "Event")
   SetEnumSourceType(sourceMap, enumTable, "WorldEvent", "Event")
-  SetEnumSourceType(sourceMap, enumTable, "Promotion", "Other")
-  SetEnumSourceType(sourceMap, enumTable, "TradingCardGame", "Other")
-  SetEnumSourceType(sourceMap, enumTable, "InGameShop", "Other")
-  SetEnumSourceType(sourceMap, enumTable, "Shop", "Other")
-  SetEnumSourceType(sourceMap, enumTable, "Store", "Other")
+  SetEnumSourceType(sourceMap, enumTable, "Promotion", "Promotion")
+  SetEnumSourceType(sourceMap, enumTable, "TradingCardGame", "TCG")
+  SetEnumSourceType(sourceMap, enumTable, "InGameShop", "Shop")
+  SetEnumSourceType(sourceMap, enumTable, "Shop", "Shop")
+  SetEnumSourceType(sourceMap, enumTable, "Store", "Shop")
   SetEnumSourceType(sourceMap, enumTable, "NotAvailable", "Other")
-  SetEnumSourceType(sourceMap, enumTable, "TradingPost", "Vendor")
+  SetEnumSourceType(sourceMap, enumTable, "TradingPost", "Trading Post")
   SetEnumSourceType(sourceMap, enumTable, "Discovery", "Secret")
 
   MountAtlasRuntime.journalSourceTypeMap = sourceMap
@@ -1385,6 +1894,48 @@ function BuildExpansionContextText(...)
   return Trim(table.concat(parts, " "))
 end
 
+function IsTradingPostSourceType(sourceType)
+  local enumTable = Enum and Enum.MountSourceType
+
+  return type(enumTable) == "table"
+    and enumTable.TradingPost ~= nil
+    and sourceType == enumTable.TradingPost
+end
+
+function IsKnownTradingPostSpellID(spellID)
+  spellID = tonumber(spellID)
+
+  return spellID ~= nil
+    and type(MountAtlasTradingPostSpellIDs) == "table"
+    and MountAtlasTradingPostSpellIDs[spellID] == true
+end
+
+function IsTradingPostJournalText(...)
+  return TextContainsAny(BuildExpansionContextText(...), "trading post", "tradingpost", "puesto comercial")
+end
+
+function IsTradingPostMount(mount)
+  if type(mount) ~= "table" then
+    return false
+  end
+
+  if GetSourceGroup(mount.source or "Other") == "tradingpost"
+    or IsTradingPostSourceType(mount.sourceType)
+    or IsKnownTradingPostSpellID(mount.spellID or mount.mountSpellID or mount.spell) then
+    return true
+  end
+
+  local explicitCategory = Normalize(mount.specialCategory or mount.specialFilter or mount.availabilityCategory or "")
+
+  if explicitCategory == "tradingpost"
+    or explicitCategory == "trading post"
+    or explicitCategory == "puesto comercial" then
+    return true
+  end
+
+  return IsTradingPostJournalText(mount.journalSource, mount.sourceText, mount.description)
+end
+
 function InferExpansionFromReputationText(...)
   local cleanText = Normalize(BuildExpansionContextText(...))
 
@@ -1451,17 +2002,15 @@ end
 function GetExternalJournalUnavailableReason(sourceType, sourceText)
   local enumTable = Enum and Enum.MountSourceType
 
+  if IsTradingPostSourceType(sourceType) then
+    return nil
+  end
+
+  if TextContainsAny(sourceText, "trading post", "puesto comercial") then
+    return nil
+  end
+
   if type(enumTable) == "table" then
-    if sourceType == enumTable.TradingCardGame then
-      return L("unavailableReasonTCG")
-    end
-
-    if sourceType == enumTable.InGameShop
-      or sourceType == enumTable.Shop
-      or sourceType == enumTable.Store then
-      return L("unavailableReasonShop")
-    end
-
     if sourceType == enumTable.NotAvailable then
       return L("unavailableReasonRemoved")
     end
@@ -1469,34 +2018,6 @@ function GetExternalJournalUnavailableReason(sourceType, sourceText)
 
   if TextContainsAny(sourceText, "not available", "unavailable", "no disponible", "no longer available", "no longer obtainable", "no longer in game") then
     return L("unavailableReasonRemoved")
-  end
-
-  if TextContainsAny(sourceText, "trading card game", "tcg", "juego de cartas") then
-    return L("unavailableReasonTCG")
-  end
-
-  if TextContainsAny(sourceText, "collector's edition", "collectors edition", "edicion de coleccionista") then
-    return L("unavailableReasonCollector")
-  end
-
-  if TextContainsAny(sourceText, "recruit-a-friend", "recluta a un amigo") then
-    return L("unavailableReasonRecruit")
-  end
-
-  if TextContainsAny(sourceText, "pre-purchase", "prepurchase", "pre-order", "preorder", "precompra") then
-    return L("unavailableReasonPreorder")
-  end
-
-  if TextContainsAny(sourceText, "in-game shop", "in game shop", "in-game store", "in game store", "blizzard shop", "blizzard store", "battle.net shop", "battle.net store", "battle.net", "world of warcraft shop", "tienda del juego", "tienda de blizzard") then
-    return L("unavailableReasonShop")
-  end
-
-  if TextContainsAny(sourceText, "promotion", "promotional", "promocion", "limited-time", "limited time", "bundle", "prime gaming", "twitch drop", "blizzcon") then
-    return L("unavailableReasonPromotion")
-  end
-
-  if type(enumTable) == "table" and sourceType == enumTable.Promotion then
-    return L("unavailableReasonPromotion")
   end
 
   return nil
@@ -1530,7 +2051,11 @@ function InferJournalMountSource(sourceType, sourceText, mountName)
     return "Event"
   end
 
-  if TextContainsAny(sourceContext, "vendor", "vendedor", "trading post", "puesto comercial") then
+  if TextContainsAny(sourceContext, "trading post", "tradingpost", "puesto comercial") then
+    return "Trading Post"
+  end
+
+  if TextContainsAny(sourceContext, "vendor", "vendedor") then
     return "Vendor"
   end
 
@@ -1609,6 +2134,11 @@ function InferJournalMountExpansion(sourceText, description, mountName)
   end
 
   local cleanText = Normalize(text)
+
+  if CleanTextContainsAny(cleanText, "trading post", "tradingpost", "puesto comercial") then
+    return "Trading Post"
+  end
+
   local reputationExpansion = InferExpansionFromReputationText(sourceText, description, mountName)
 
   if reputationExpansion then
@@ -1693,8 +2223,14 @@ function AddJournalMountCatalogEntry(configuredMountIDs, mountID)
   end
 
   local sourceType = info and info.sourceType
+  local spellID = info and info.spellID
+  local isTradingPost = IsTradingPostSourceType(sourceType)
+    or IsKnownTradingPostSpellID(spellID)
 
-  if sourceType and BuildExternalJournalSourceTypeSet()[sourceType] then
+  if sourceType
+    and BuildExternalJournalSourceTypeSet()[sourceType]
+    and not isTradingPost
+    and not (MountAtlasAutoCatalog and MountAtlasAutoCatalog.includeExternal == true) then
     configuredMountIDs[mountID] = true
     return false
   end
@@ -1704,23 +2240,33 @@ function AddJournalMountCatalogEntry(configuredMountIDs, mountID)
   local sourceText = extra.sourceText
   local journalSource = sourceText or description or ""
 
-  if GetExternalJournalUnavailableReason(sourceType, journalSource) then
+  isTradingPost = isTradingPost
+    or IsTradingPostJournalText(sourceText, description)
+
+  if not isTradingPost and GetExternalJournalUnavailableReason(sourceType, journalSource) then
     configuredMountIDs[mountID] = true
     return false
   end
 
   local detectedProfession = DetectProfessionNameFromText((name or "") .. " " .. journalSource)
-  local inferredSource = InferJournalMountSource(sourceType, journalSource, name)
+  local inferredSource = isTradingPost
+    and "Trading Post"
+    or InferJournalMountSource(sourceType, journalSource, name)
+  local inferredExpansion = isTradingPost
+    and "Trading Post"
+    or InferJournalMountExpansion(sourceText, description, name)
 
   MountAtlasMounts = MountAtlasMounts or {}
   table.insert(MountAtlasMounts, {
     name = name,
     mountID = mountID,
+    spellID = spellID,
     source = inferredSource,
-    expansion = InferJournalMountExpansion(sourceText, description, name),
+    expansion = inferredExpansion,
     reset = "catalog",
     journalSource = journalSource,
     sourceType = sourceType,
+    specialCategory = isTradingPost and "tradingpost" or nil,
     requiredProfession = detectedProfession,
     autoCatalog = true
   })
@@ -2017,7 +2563,7 @@ function ScrollList(delta)
   if nextOffset ~= currentScrollOffset then
     currentScrollOffset = nextOffset
     currentPage = math.floor(currentScrollOffset / ROW_COUNT) + 1
-    RefreshWindow()
+    RefreshWindow(true)
   end
 end
 
@@ -2152,8 +2698,41 @@ function GetUnavailableRegistryEntry(mount)
     return nil
   end
 
+  if MountAtlasRuntime.unavailableRegistryCacheSource ~= MountAtlasUnavailableMounts then
+    MountAtlasRuntime.unavailableRegistryCacheSource = MountAtlasUnavailableMounts
+    MountAtlasRuntime.unavailableRegistryByID = {}
+    MountAtlasRuntime.unavailableRegistryByName = {}
+
+    for registryKey, entry in pairs(MountAtlasUnavailableMounts) do
+      local numericKey = tonumber(registryKey)
+
+      if numericKey then
+        MountAtlasRuntime.unavailableRegistryByID[numericKey] = entry
+        MountAtlasRuntime.unavailableRegistryByID[tostring(numericKey)] = entry
+      end
+
+      if type(entry) == "table" then
+        if entry.mountID then
+          MountAtlasRuntime.unavailableRegistryByID[entry.mountID] = entry
+          MountAtlasRuntime.unavailableRegistryByID[tostring(entry.mountID)] = entry
+        end
+
+        local entryName = entry.name or entry.mountName
+
+        if entryName and entryName ~= "" then
+          MountAtlasRuntime.unavailableRegistryByName[Normalize(entryName)] = entry
+        end
+      end
+
+      if type(registryKey) == "string" and not numericKey then
+        MountAtlasRuntime.unavailableRegistryByName[Normalize(registryKey)] = entry
+      end
+    end
+  end
+
   if mount.mountID then
-    local entry = MountAtlasUnavailableMounts[mount.mountID] or MountAtlasUnavailableMounts[tostring(mount.mountID)]
+    local entry = MountAtlasRuntime.unavailableRegistryByID[mount.mountID]
+      or MountAtlasRuntime.unavailableRegistryByID[tostring(mount.mountID)]
 
     if entry then
       return entry
@@ -2163,15 +2742,7 @@ function GetUnavailableRegistryEntry(mount)
   local mountName = Normalize(mount.name or "")
 
   if mountName ~= "" then
-    for key, entry in pairs(MountAtlasUnavailableMounts) do
-      if Normalize(tostring(key)) == mountName then
-        return entry
-      end
-
-      if type(entry) == "table" and Normalize(entry.name or "") == mountName then
-        return entry
-      end
-    end
+    return MountAtlasRuntime.unavailableRegistryByName[mountName]
   end
 end
 
@@ -2180,10 +2751,15 @@ function GetMountUnavailableReason(mount)
     return nil
   end
 
+  if IsTradingPostMount(mount) then
+    return nil
+  end
+
   MountAtlasRuntime.unavailableReasonCache = MountAtlasRuntime.unavailableReasonCache or {}
 
   local key = GetMountKey(mount)
   local cached = MountAtlasRuntime.unavailableReasonCache[key]
+  local journalLookupPending = false
 
   if cached ~= nil then
     return cached ~= false and cached or nil
@@ -2220,9 +2796,49 @@ function GetMountUnavailableReason(mount)
     )
   end
 
+  if not reason and mount.mountID then
+    local cachedJournalInfo = MountAtlasRuntime.journalMountInfoCache
+      and MountAtlasRuntime.journalMountInfoCache[mount.mountID]
+    local cachedJournalExtra = MountAtlasRuntime.journalMountExtraCache
+      and MountAtlasRuntime.journalMountExtraCache[mount.mountID]
+    local shouldQueryJournal = mount.autoCatalog == true
+      and C_MountJournal
+      and C_MountJournal.GetMountInfoByID
+
+    if cachedJournalInfo ~= nil or cachedJournalExtra ~= nil or shouldQueryJournal then
+      local journalInfo = cachedJournalInfo
+
+      if journalInfo == false then
+        journalInfo = nil
+      elseif not journalInfo and shouldQueryJournal then
+        journalInfo = GetJournalMountInfo(mount.mountID)
+      end
+
+      local journalExtra = cachedJournalExtra
+
+      if not journalExtra and shouldQueryJournal then
+        journalExtra = GetJournalMountExtra(mount.mountID)
+      end
+
+      journalExtra = journalExtra or {}
+
+      local journalSource = (journalExtra.sourceText or "") .. " "
+        .. (journalExtra.description or "") .. " "
+        .. (journalInfo and journalInfo.name or "")
+
+      if journalInfo then
+        reason = GetExternalJournalUnavailableReason(journalInfo.sourceType, journalSource)
+      elseif shouldQueryJournal then
+        journalLookupPending = true
+      end
+    end
+  end
+
   if not reason then
     local searchText = Normalize(
       (mount.name or "") .. " "
+      .. (LocalizeDataValue(mount.reward) or "") .. " "
+      .. (LocalizeDataValue(mount.configuredReward) or "") .. " "
       .. (LocalizeDataValue(mount.journalSource) or "") .. " "
       .. (LocalizeDataValue(mount.note) or "") .. " "
       .. (LocalizeDataValue(mount.requirement) or "") .. " "
@@ -2232,17 +2848,8 @@ function GetMountUnavailableReason(mount)
 
     if TextContainsAny(searchText, "not available", "unavailable", "no disponible", "no longer available", "no longer obtainable", "no longer in game", "removed from the game", "ya no esta disponible", "ya no se puede obtener", "ya no esta en el juego", "eliminada del juego", "eliminado del juego", "retirada del juego", "retirado del juego") then
       reason = L("unavailableReasonRemoved")
-    elseif TextContainsAny(searchText, "trading card game", "tcg", "juego de cartas") then
-      reason = L("unavailableReasonTCG")
-    elseif TextContainsAny(searchText, "in-game shop", "in game shop", "in-game store", "in game store", "blizzard shop", "blizzard store", "battle.net shop", "battle.net store", "battle.net", "world of warcraft shop", "tienda del juego", "tienda de blizzard") then
-      reason = L("unavailableReasonShop")
-    elseif TextContainsAny(searchText, "promotion", "promotional", "promocion", "limited-time", "limited time", "bundle", "prime gaming", "twitch drop") then
-      reason = L("unavailableReasonPromotion")
-    elseif TextContainsAny(searchText, "collector's edition", "collectors edition", "edicion de coleccionista") then
-      reason = L("unavailableReasonCollector")
-    elseif TextContainsAny(searchText, "recruit-a-friend", "recluta a un amigo") then
-      reason = L("unavailableReasonRecruit")
-    elseif TextContainsAny(searchText, "blizzcon", "anniversary", "aniversario") then
+    elseif TextContainsAny(searchText, "blizzcon", "anniversary", "aniversario")
+      and TextContainsAny(searchText, "ended", "expired", "retired", "removed", "no longer", "ya no") then
       reason = L("unavailableReasonExpiredEvent")
     elseif TextContainsAny(searchText, "challenge mode", "modo desafio") then
       reason = L("unavailableReasonChallengeMode")
@@ -2250,12 +2857,15 @@ function GetMountUnavailableReason(mount)
       reason = L("unavailableReasonAchievementRemoved")
     elseif TextContainsAny(searchText, "gladiator", "gladiador", "elite pvp", "elite") and TextContainsAny(searchText, "season", "temporada") then
       reason = L("unavailableReasonSeason")
-    elseif TextContainsAny(searchText, "pre-purchase", "prepurchase", "pre-order", "preorder", "precompra") then
+    elseif TextContainsAny(searchText, "pre-purchase", "prepurchase", "pre-order", "preorder", "precompra")
+      and TextContainsAny(searchText, "ended", "expired", "retired", "removed", "no longer", "ya no") then
       reason = L("unavailableReasonPreorder")
     end
   end
 
-  MountAtlasRuntime.unavailableReasonCache[key] = reason or false
+  if reason or not journalLookupPending then
+    MountAtlasRuntime.unavailableReasonCache[key] = reason or false
+  end
 
   return reason
 end
@@ -2393,10 +3003,10 @@ local function ToggleFavoriteMount(mount)
 
   if favorites.mounts[key] then
     favorites.mounts[key] = nil
-    Print(L("favoriteRemoved", GetMountDisplayName(mount)))
+    Print(L("pinnedRemoved", GetMountDisplayName(mount)))
   else
     favorites.mounts[key] = true
-    Print(L("favoriteAdded", GetMountDisplayName(mount)))
+    Print(L("pinnedAdded", GetMountDisplayName(mount)))
   end
 
   InvalidateMountAtlasDataCache()
@@ -2413,16 +3023,20 @@ local function ToggleFavoriteAchievement(entry)
 
   if favorites.achievements[key] then
     favorites.achievements[key] = nil
-    Print(L("favoriteRemoved", GetAchievementDisplayName(entry)))
+    Print(L("pinnedRemoved", GetAchievementDisplayName(entry)))
   else
     favorites.achievements[key] = true
-    Print(L("favoriteAdded", GetAchievementDisplayName(entry)))
+    Print(L("pinnedAdded", GetAchievementDisplayName(entry)))
   end
 
   InvalidateMountAtlasDataCache()
 end
 
 local function ShouldShowMount(mount, mode)
+  if currentExpansionFilter == "Trading Post" and IsTradingPostMount(mount) then
+    return true
+  end
+
   if mode == "today" then
     return mount.reset == "daily"
       or mount.reset == "repeatable"
@@ -2440,6 +3054,10 @@ end
 local function GetMountExpansion(mount)
   if type(mount) ~= "table" then
     return "General"
+  end
+
+  if IsTradingPostMount(mount) then
+    return "Trading Post"
   end
 
   if mount.expansion and mount.expansion ~= "" then
@@ -2487,6 +3105,110 @@ end
 
 local function GetMountSource(mount)
   return mount.source or "Other"
+end
+
+function BuildSourceFilterAvailability()
+  local cacheKey = currentExpansionFilter .. "\001" .. tostring(MountAtlasRuntime.cacheRevision)
+  local cached = MountAtlasRuntime.sourceFilterAvailability
+
+  if cached and cached.key == cacheKey then
+    return cached
+  end
+
+  local availability = {
+    key = cacheKey,
+    groups = {},
+    sourcesByGroup = { all = {} }
+  }
+
+  for _, mount in ipairs(MountAtlasMounts or {}) do
+    local expansion = GetMountExpansion(mount)
+
+    if IsExpansionEnabled(expansion) and ExpansionMatches(expansion, currentExpansionFilter) then
+      local source = GetMountSource(mount)
+      local sourceGroup = GetSourceGroup(source)
+      local specialGroup = GetMountSpecialGroup(mount)
+
+      availability.sourcesByGroup.all[source] = true
+      availability.groups[sourceGroup] = true
+      availability.sourcesByGroup[sourceGroup] = availability.sourcesByGroup[sourceGroup] or {}
+      availability.sourcesByGroup[sourceGroup][source] = true
+
+      if specialGroup then
+        availability.groups[specialGroup] = true
+        availability.sourcesByGroup[specialGroup] = availability.sourcesByGroup[specialGroup] or {}
+        availability.sourcesByGroup[specialGroup][source] = true
+      end
+    end
+  end
+
+  MountAtlasRuntime.sourceFilterAvailability = availability
+  return availability
+end
+
+function GetAvailableSourceGroupOptions()
+  local availability = BuildSourceFilterAvailability()
+  local options = {}
+
+  for _, option in ipairs(sourceGroupOptions) do
+    if option.value == "all" or availability.groups[option.value] then
+      table.insert(options, option)
+    end
+  end
+
+  return options
+end
+
+function GetAvailableSubSourceOptions()
+  local availability = BuildSourceFilterAvailability()
+  local availableSources = availability.sourcesByGroup[currentSourceGroupFilter] or {}
+  local options = {}
+
+  for _, option in ipairs(GetSubSourceOptions()) do
+    local available = option.value == "all"
+
+    if not available then
+      for source in pairs(availableSources) do
+        if SourceMatches(source, option.value) then
+          available = true
+          break
+        end
+      end
+    end
+
+    if available then
+      table.insert(options, option)
+    end
+  end
+
+  return options
+end
+
+function OptionListHasValue(options, value)
+  for _, option in ipairs(options or {}) do
+    if option.value == value then
+      return true
+    end
+  end
+
+  return false
+end
+
+function NormalizeAvailableSourceFilters()
+  local groupOptions = GetAvailableSourceGroupOptions()
+
+  if not OptionListHasValue(groupOptions, currentSourceGroupFilter) then
+    currentSourceGroupFilter = "all"
+    currentSourceFilter = "all"
+  end
+
+  local sourceOptions = GetAvailableSubSourceOptions()
+
+  if not OptionListHasValue(sourceOptions, currentSourceFilter) then
+    currentSourceFilter = "all"
+  end
+
+  return groupOptions, sourceOptions
 end
 
 local supportedDataLocales = {
@@ -2748,9 +3470,31 @@ local function TranslateSpanishTextToEnglish(text)
 end
 
 function LocalizeDataValue(value)
+  if type(value) == "string" then
+    MountAtlasRuntime.localizedValueCache = MountAtlasRuntime.localizedValueCache or {}
+
+    if MountAtlasRuntime.localizedValueCache[value] ~= nil then
+      local cachedValue = MountAtlasRuntime.localizedValueCache[value]
+
+      return cachedValue ~= false and cachedValue or nil
+    end
+  elseif type(value) == "table" then
+    MountAtlasRuntime.localizedTableValueCache = MountAtlasRuntime.localizedTableValueCache or {}
+
+    if MountAtlasRuntime.localizedTableValueCache[value] ~= nil then
+      local cachedValue = MountAtlasRuntime.localizedTableValueCache[value]
+
+      return cachedValue ~= false and cachedValue or nil
+    end
+  end
+
   local localized = PickLocalizedDataValue(value)
 
   if type(localized) ~= "string" then
+    if type(value) == "table" then
+      MountAtlasRuntime.localizedTableValueCache[value] = localized or false
+    end
+
     return localized
   end
 
@@ -2762,6 +3506,12 @@ function LocalizeDataValue(value)
 
   if GetDataLocale() ~= "esMX" then
     localized = TranslateSpanishTextToEnglish(localized)
+  end
+
+  if type(value) == "string" then
+    MountAtlasRuntime.localizedValueCache[value] = localized or false
+  elseif type(value) == "table" then
+    MountAtlasRuntime.localizedTableValueCache[value] = localized or false
   end
 
   return localized
@@ -3250,21 +4000,282 @@ local function GetMountMacro(mount)
   end
 end
 
-local function GetMountTomTomCommand(mount)
-  if type(mount) ~= "table" then
+function MountAtlasSplitTomTomCommandLines(commandText)
+  local commands = {}
+  commandText = FormatListValue(commandText, "\n")
+
+  if not commandText or commandText == "" then
+    return commands
+  end
+
+  for rawLine in tostring(commandText):gmatch("[^\r\n]+") do
+    local line = Trim(rawLine)
+
+    if line ~= "" then
+      local waypoint = line:gsub("^/way%s*", "")
+
+      if waypoint ~= "" then
+        table.insert(commands, "/way " .. waypoint)
+      end
+    end
+  end
+
+  return commands
+end
+
+function MountAtlasAddRouteWaypoint(waypoints, seen, zone, coordinates, label)
+  zone = LocalizeDataValue(zone)
+  coordinates = FormatCoordinatesValue(coordinates)
+  label = LocalizeDataValue(label)
+
+  if not zone or zone == "" or not coordinates or coordinates == "" then
+    return
+  end
+
+  local key = Normalize(zone) .. "|" .. Normalize(coordinates)
+
+  if seen[key] then
+    return
+  end
+
+  table.insert(waypoints, {
+    zone = zone,
+    coordinates = coordinates,
+    label = label
+  })
+  seen[key] = true
+end
+
+function MountAtlasAddRouteWaypointFromEntry(waypoints, seen, entry, fallbackZone, fallbackLabel)
+  if type(entry) ~= "table" then
+    return
+  end
+
+  local zone = entry.waypointZone or entry.mapZone or entry.zone or fallbackZone
+  local coordinates = entry.coordinates or entry.coords or entry.coord
+  local label = entry.label or entry.name or entry.location or entry.title or fallbackLabel
+
+  if not coordinates then
+    if tonumber(entry[1]) and tonumber(entry[2]) then
+      coordinates = { entry[1], entry[2] }
+    elseif type(entry[1]) == "string" and type(entry[2]) == "string" then
+      zone = zone or entry[1]
+      coordinates = entry[2]
+      label = label or entry[3]
+    end
+  end
+
+  MountAtlasAddRouteWaypoint(waypoints, seen, zone, coordinates, label)
+end
+
+function MountAtlasFindLocationGuideEntryFuzzy(entries, text)
+  if type(entries) ~= "table" or not text or text == "" then
     return nil
   end
 
-  local explicitCommand = FormatListValue(mount.tomtom or mount.waypoint or mount.tomTom, "\n")
+  local direct = FindLocationGuideEntry(entries, text)
 
-  if explicitCommand then
-    return explicitCommand
+  if direct then
+    return direct
+  end
+
+  local cleanText = Normalize(tostring(text):gsub("%s*;%s*.*$", ""))
+
+  if cleanText == "" then
+    return nil
+  end
+
+  local bestEntry
+  local bestLength = 0
+
+  for entryKey, entry in pairs(entries) do
+    if type(entry) == "table" then
+      local cleanKey = Normalize(tostring(entryKey))
+
+      if cleanKey ~= ""
+        and string.find(cleanText, cleanKey, 1, true)
+        and string.len(cleanKey) > bestLength then
+        bestEntry = entry
+        bestLength = string.len(cleanKey)
+      end
+    end
+  end
+
+  return bestEntry
+end
+
+function MountAtlasTextMatchesMountWaypoint(mount, text)
+  local cleanText = Normalize(text)
+
+  if cleanText == "" then
+    return false
+  end
+
+  local candidates = {
+    mount.name,
+    LocalizeDataValue(mount.name),
+    mount.zone,
+    LocalizeDataValue(mount.zone),
+    mount.boss,
+    LocalizeDataValue(mount.boss),
+    mount.location,
+    LocalizeDataValue(mount.location)
+  }
+
+  for _, candidate in ipairs(candidates) do
+    local cleanCandidate = Normalize(candidate)
+
+    if cleanCandidate ~= ""
+      and (cleanText == cleanCandidate
+        or string.find(cleanText, cleanCandidate, 1, true)
+        or string.find(cleanCandidate, cleanText, 1, true)) then
+      return true
+    end
+  end
+
+  return false
+end
+
+function MountAtlasResolveRouteStepWaypoint(mount, stepText)
+  if type(mount) ~= "table" or not stepText or stepText == "" then
+    return nil
+  end
+
+  local guide = type(MountAtlasLocationGuide) == "table" and MountAtlasLocationGuide or {}
+  local cleanStep = Trim(tostring(stepText):gsub("%s*;%s*.*$", ""))
+  local entry = MountAtlasFindLocationGuideEntryFuzzy(guide.bosses, cleanStep)
+    or MountAtlasFindLocationGuideEntryFuzzy(guide.zones, cleanStep)
+    or MountAtlasFindLocationGuideEntryFuzzy(guide.mounts, cleanStep)
+
+  if entry then
+    return entry, cleanStep
+  end
+
+  if MountAtlasTextMatchesMountWaypoint(mount, cleanStep) then
+    local zone, coordinates = GetMountWaypointInfo(mount)
+
+    if zone and coordinates then
+      return {
+        waypointZone = zone,
+        coordinates = coordinates,
+        location = cleanStep
+      }, cleanStep
+    end
+  end
+end
+
+function MountAtlasAddExplicitRouteWaypoints(waypoints, seen, waypointList, fallbackZone)
+  if type(waypointList) ~= "table" or IsLocalizedDataTable(waypointList) then
+    return
+  end
+
+  for _, waypoint in ipairs(waypointList) do
+    if type(waypoint) == "table" then
+      MountAtlasAddRouteWaypointFromEntry(waypoints, seen, waypoint, fallbackZone)
+    elseif type(waypoint) == "string" then
+      local entry, label = MountAtlasResolveRouteStepWaypoint({ zone = fallbackZone }, waypoint)
+
+      if entry then
+        MountAtlasAddRouteWaypointFromEntry(waypoints, seen, entry, fallbackZone, label)
+      end
+    end
+  end
+end
+
+function MountAtlasAddRouteWaypointsFromText(waypoints, seen, mount, routeText)
+  if not routeText or routeText == "" then
+    return
+  end
+
+  for stepText in tostring(routeText):gmatch("[^>]+") do
+    local entry, label = MountAtlasResolveRouteStepWaypoint(mount, stepText)
+
+    if entry then
+      MountAtlasAddRouteWaypointFromEntry(waypoints, seen, entry, nil, label)
+    end
+  end
+end
+
+function MountAtlasBuildMountRouteWaypoints(mount)
+  local waypoints = {}
+  local seen = {}
+  local guide = GetMountLocationGuide(mount)
+  local fallbackZone = mount.waypointZone or mount.mapZone or mount.zone
+
+  MountAtlasAddExplicitRouteWaypoints(waypoints, seen, mount.routeWaypoints or mount.tomtomRoute or mount.waypoints, fallbackZone)
+
+  if type(guide) == "table" then
+    MountAtlasAddExplicitRouteWaypoints(waypoints, seen, guide.routeWaypoints or guide.tomtomRoute or guide.waypoints, guide.waypointZone or guide.mapZone or guide.zone or fallbackZone)
+  end
+
+  if #waypoints == 0 then
+    MountAtlasAddRouteWaypointsFromText(waypoints, seen, mount, GetMountRoute(mount))
+  end
+
+  local zone, coordinates = GetMountWaypointInfo(mount)
+  MountAtlasAddRouteWaypoint(waypoints, seen, zone, coordinates, GetMountDisplayName(mount))
+
+  return waypoints
+end
+
+function GetMountTomTomCommands(mount)
+  if type(mount) ~= "table" then
+    return {}
+  end
+
+  MountAtlasRuntime.tomTomCommandCache = MountAtlasRuntime.tomTomCommandCache or {}
+
+  local cacheKey = GetMountKey(mount)
+
+  if MountAtlasRuntime.tomTomCommandCache[cacheKey] then
+    return MountAtlasRuntime.tomTomCommandCache[cacheKey]
+  end
+
+  local explicitCommands = MountAtlasSplitTomTomCommandLines(GetMountGuideField(mount,
+    "tomtom",
+    "tomTom",
+    "waypointCommand",
+    "waypointCommands") or mount.waypoint)
+
+  if #explicitCommands > 0 then
+    MountAtlasRuntime.tomTomCommandCache[cacheKey] = explicitCommands
+    return explicitCommands
+  end
+
+  local commands = {}
+
+  for _, waypoint in ipairs(MountAtlasBuildMountRouteWaypoints(mount)) do
+    table.insert(commands, "/way " .. waypoint.zone .. " " .. waypoint.coordinates)
+  end
+
+  MountAtlasRuntime.tomTomCommandCache[cacheKey] = commands
+
+  return commands
+end
+
+function MountAtlasHasTomTomWaypoint(mount)
+  if type(mount) ~= "table" then
+    return false
+  end
+
+  if #MountAtlasSplitTomTomCommandLines(GetMountGuideField(mount,
+    "tomtom",
+    "tomTom",
+    "waypointCommand",
+    "waypointCommands") or mount.waypoint) > 0 then
+    return true
   end
 
   local zone, coordinates = GetMountWaypointInfo(mount)
 
-  if coordinates and zone and zone ~= "" then
-    return "/way " .. zone .. " " .. coordinates
+  return zone ~= nil and zone ~= "" and coordinates ~= nil and coordinates ~= ""
+end
+
+local function GetMountTomTomCommand(mount)
+  local commands = GetMountTomTomCommands(mount)
+
+  if #commands > 0 then
+    return table.concat(commands, "\n")
   end
 end
 
@@ -3770,17 +4781,23 @@ local function ShouldRequireActiveEventForMode(mode)
 end
 
 local function PassesMountFilters(mount)
+  if currentMode ~= "pinned"
+    and IsMountUnavailable(mount)
+    and not IsTradingPostMount(mount) then
+    return false
+  end
+
   local expansion = GetMountExpansion(mount)
-  local unavailable = IsMountUnavailable(mount)
   local eventAvailable = true
 
-  if not unavailable and ShouldRequireActiveEventForMode(currentMode) then
+  if currentMode ~= "pinned" and ShouldRequireActiveEventForMode(currentMode) then
     eventAvailable = IsEventMountAvailable(mount)
   end
 
   return IsExpansionEnabled(expansion)
     and eventAvailable
     and ExpansionMatches(expansion, currentExpansionFilter)
+    and SourceGroupMatches(mount, currentSourceGroupFilter)
     and SourceMatches(GetMountSource(mount), currentSourceFilter)
 end
 
@@ -3816,36 +4833,39 @@ local function PassesAchievementFilters(entry)
 
   return IsExpansionEnabled(expansion)
     and ExpansionMatches(expansion, currentExpansionFilter)
+    and SourceGroupMatches(source, currentSourceGroupFilter)
     and SourceMatches(source, currentSourceFilter)
 end
 
-local function BuildMountJournalNameCache()
-  if not C_MountJournal or not C_MountJournal.GetMountIDs or not C_MountJournal.GetMountInfoByID then
-    MountAtlasRuntime.mountJournalNameCache = nil
-    MountAtlasRuntime.mountJournalSpellCache = nil
-    MountAtlasRuntime.collectedMountNameCache = nil
-    MountAtlasRuntime.collectedMountIDCache = nil
-    return nil
+function MountAtlasFinishMountJournalNameCacheBuild()
+  MountAtlasRuntime.mountJournalNameCacheReady = true
+  MountAtlasRuntime.mountJournalNameCacheBuilding = nil
+  MountAtlasRuntime.mountJournalNameCacheMountIDs = nil
+  MountAtlasRuntime.mountJournalNameCacheIndex = nil
+  InvalidateMountAtlasDataCache()
+
+  if mainFrame and mainFrame:IsShown() then
+    QueueRefreshWindow(0.05)
+  end
+end
+
+function MountAtlasProcessMountJournalNameCacheBatch()
+  if not MountAtlasRuntime.mountJournalNameCacheBuilding then
+    return
   end
 
-  local mountIDs = SafeCall(C_MountJournal.GetMountIDs)
+  local mountIDs = MountAtlasRuntime.mountJournalNameCacheMountIDs
 
   if type(mountIDs) ~= "table" then
-    MountAtlasRuntime.mountJournalNameCache = nil
-    MountAtlasRuntime.mountJournalSpellCache = nil
-    MountAtlasRuntime.collectedMountNameCache = nil
-    MountAtlasRuntime.collectedMountIDCache = nil
-    return nil
+    MountAtlasFinishMountJournalNameCacheBuild()
+    return
   end
 
-  MountAtlasRuntime.mountJournalNameCache = {}
-  MountAtlasRuntime.mountJournalSpellCache = {}
-  MountAtlasRuntime.collectedMountNameCache = {}
-  MountAtlasRuntime.collectedMountIDCache = {}
-  MountAtlasRuntime.mountDisplayNameCache = MountAtlasRuntime.mountDisplayNameCache or {}
-  MountAtlasRuntime.mountIconCache = MountAtlasRuntime.mountIconCache or {}
+  local index = MountAtlasRuntime.mountJournalNameCacheIndex or 1
+  local lastIndex = math.min(#mountIDs, index + MOUNT_ATLAS_JOURNAL_CACHE_BATCH_SIZE - 1)
 
-  for _, journalMountID in ipairs(mountIDs) do
+  while index <= lastIndex do
+    local journalMountID = mountIDs[index]
     local info = GetJournalMountInfo(journalMountID)
 
     if info and info.name then
@@ -3862,11 +4882,69 @@ local function BuildMountJournalNameCache()
       if info.isCollected == true then
         MountAtlasRuntime.collectedMountIDCache[journalMountID] = true
         MountAtlasRuntime.collectedMountNameCache[key] = true
+        MountAtlasRuntime.journalCollectionCollected = (MountAtlasRuntime.journalCollectionCollected or 0) + 1
       end
+
+      MountAtlasRuntime.journalCollectionTotal = (MountAtlasRuntime.journalCollectionTotal or 0) + 1
     end
+
+    index = index + 1
   end
 
-  return MountAtlasRuntime.mountJournalNameCache
+  MountAtlasRuntime.mountJournalNameCacheIndex = index
+
+  if index <= #mountIDs then
+    MountAtlasQueueRuntimeTask(MOUNT_ATLAS_JOURNAL_CACHE_BATCH_DELAY, MountAtlasProcessMountJournalNameCacheBatch)
+  else
+    MountAtlasFinishMountJournalNameCacheBuild()
+  end
+end
+
+StartMountJournalNameCacheBuild = function(delay)
+  if MountAtlasRuntime.mountJournalNameCacheReady and MountAtlasRuntime.mountJournalNameCache then
+    return MountAtlasRuntime.mountJournalNameCache
+  end
+
+  if MountAtlasRuntime.mountJournalNameCacheBuilding then
+    return nil
+  end
+
+  if not C_MountJournal or not C_MountJournal.GetMountIDs or not C_MountJournal.GetMountInfoByID then
+    MountAtlasRuntime.mountJournalNameCacheReady = false
+    return nil
+  end
+
+  local mountIDs = SafeCall(C_MountJournal.GetMountIDs)
+
+  if type(mountIDs) ~= "table" then
+    MountAtlasRuntime.mountJournalNameCacheReady = false
+    return nil
+  end
+
+  MountAtlasRuntime.mountJournalNameCache = {}
+  MountAtlasRuntime.mountJournalSpellCache = {}
+  MountAtlasRuntime.collectedMountNameCache = {}
+  MountAtlasRuntime.collectedMountIDCache = {}
+  MountAtlasRuntime.mountDisplayNameCache = MountAtlasRuntime.mountDisplayNameCache or {}
+  MountAtlasRuntime.mountIconCache = MountAtlasRuntime.mountIconCache or {}
+  MountAtlasRuntime.journalCollectionTotal = 0
+  MountAtlasRuntime.journalCollectionCollected = 0
+  MountAtlasRuntime.mountJournalNameCacheMountIDs = mountIDs
+  MountAtlasRuntime.mountJournalNameCacheIndex = 1
+  MountAtlasRuntime.mountJournalNameCacheBuilding = true
+  MountAtlasRuntime.mountJournalNameCacheReady = false
+  MountAtlasQueueRuntimeTask(delay or 0, MountAtlasProcessMountJournalNameCacheBatch)
+
+  return nil
+end
+
+local function BuildMountJournalNameCache()
+  if MountAtlasRuntime.mountJournalNameCacheReady and MountAtlasRuntime.mountJournalNameCache then
+    return MountAtlasRuntime.mountJournalNameCache
+  end
+
+  StartMountJournalNameCacheBuild(0)
+  return nil
 end
 
 local function BuildCollectedMountNameCache()
@@ -3877,6 +4955,52 @@ local function BuildCollectedMountNameCache()
   return MountAtlasRuntime.collectedMountNameCache
 end
 
+ScheduleMountAtlasPreload = function(delay)
+  if MountAtlasRuntime.preloadQueued or MountAtlasRuntime.preloading then
+    return
+  end
+
+  if MountAtlasRuntime.mountJournalNameCacheReady and autoCatalogLoaded then
+    return
+  end
+
+  MountAtlasRuntime.preloadQueued = true
+
+  MountAtlasQueueRuntimeTask(delay or 0.2, function()
+    MountAtlasRuntime.preloadQueued = false
+    MountAtlasRuntime.preloading = true
+
+    StartMountJournalNameCacheBuild(0)
+    AddJournalMountCatalog()
+
+    MountAtlasQueueRuntimeTask(0.4, function()
+      if mainFrame and mainFrame:IsShown() then
+        if type(CollectConfiguredProgressRequirements) == "function" then
+          SafeCall(CollectConfiguredProgressRequirements)
+        end
+
+        if type(BuildAchievementMountLookup) == "function" then
+          SafeCall(BuildAchievementMountLookup)
+        end
+
+        if type(GetCollectionStats) == "function" then
+          SafeCall(GetCollectionStats)
+        end
+
+        if type(BuildExpansionProgressStats) == "function" then
+          SafeCall(BuildExpansionProgressStats)
+        end
+
+        if type(BuildSmartPriorityPlan) == "function" then
+          SafeCall(BuildSmartPriorityPlan)
+        end
+      end
+
+      MountAtlasRuntime.preloading = false
+    end)
+  end)
+end
+
 local function GetMountJournalID(mount)
   if type(mount) ~= "table" then
     return mount
@@ -3885,34 +5009,32 @@ local function GetMountJournalID(mount)
   local configuredMountID = tonumber(mount.mountID)
   local configuredSpellID = tonumber(mount.spellID or mount.mountSpellID or mount.spell)
 
-  if configuredMountID and configuredMountID ~= 0 and GetJournalMountInfo(configuredMountID) then
+  if configuredMountID and configuredMountID ~= 0 then
     return configuredMountID
   end
 
   if configuredSpellID and configuredSpellID ~= 0 then
     local spellCache = MountAtlasRuntime.mountJournalSpellCache
 
-    if not spellCache then
-      BuildMountJournalNameCache()
-      spellCache = MountAtlasRuntime.mountJournalSpellCache
-    end
-
     if spellCache and spellCache[configuredSpellID] then
       return spellCache[configuredSpellID]
     end
+
+    StartMountJournalNameCacheBuild(0)
   end
 
   if not mount.name or mount.name == "" then
     return configuredMountID
   end
 
-  local cache = MountAtlasRuntime.mountJournalNameCache or BuildMountJournalNameCache()
+  local cache = MountAtlasRuntime.mountJournalNameCache
 
-  if not cache then
-    return configuredMountID
+  if cache and cache[Normalize(mount.name)] then
+    return cache[Normalize(mount.name)]
   end
 
-  return cache[Normalize(mount.name)] or configuredMountID
+  StartMountJournalNameCacheBuild(0)
+  return configuredMountID
 end
 
 GetMountDisplayName = function(mount)
@@ -3931,6 +5053,10 @@ GetMountDisplayName = function(mount)
 
     if cachedName and cachedName ~= "" then
       return cachedName
+    end
+
+    if not MountAtlasRuntime.mountJournalNameCacheReady then
+      return mount.name or L("previewMount")
     end
 
     local info = GetJournalMountInfo(journalID)
@@ -3957,6 +5083,36 @@ local function IsMountNameCollected(mountName)
   return cache[Normalize(mountName)] == true
 end
 
+local function IsKnownMountSaved(mount, journalID)
+  if type(mount) ~= "table" then
+    return false
+  end
+
+  EnsureDB()
+
+  local knownMounts = MountAtlasDB.knownMounts
+
+  if type(knownMounts) ~= "table" then
+    return false
+  end
+
+  local mountID = tonumber(journalID or mount.mountID)
+
+  if mountID and knownMounts[tostring(mountID)] == true then
+    return true
+  end
+
+  local spellID = tonumber(mount.spellID or mount.mountSpellID or mount.spell)
+
+  if spellID and knownMounts["spell:" .. tostring(spellID)] == true then
+    return true
+  end
+
+  local mountName = Normalize(mount.name or "")
+
+  return mountName ~= "" and knownMounts["name:" .. mountName] == true
+end
+
 local function HasMount(mount)
   local mountID = GetMountJournalID(mount)
   local mountName = type(mount) == "table" and mount.name or nil
@@ -3966,12 +5122,24 @@ local function HasMount(mount)
   end
 
   if not C_MountJournal or not C_MountJournal.GetMountInfoByID then
-    return false
+    return IsKnownMountSaved(mount, mountID)
   end
 
   if mountID then
     if MountAtlasRuntime.collectedMountIDCache then
-      return MountAtlasRuntime.collectedMountIDCache[mountID] == true
+      if MountAtlasRuntime.collectedMountIDCache[mountID] == true then
+        return true
+      end
+
+      if not MountAtlasRuntime.mountJournalNameCacheReady then
+        return IsKnownMountSaved(mount, mountID)
+      end
+
+      return false
+    end
+
+    if not MountAtlasRuntime.mountJournalNameCacheReady then
+      return IsKnownMountSaved(mount, mountID)
     end
 
     local info = GetJournalMountInfo(mountID)
@@ -3982,16 +5150,22 @@ local function HasMount(mount)
   end
 
   if mountName then
-    return IsMountNameCollected(mountName)
+    if IsMountNameCollected(mountName) then
+      return true
+    end
+
+    if not MountAtlasRuntime.mountJournalNameCacheReady then
+      return IsKnownMountSaved(mount, mountID)
+    end
   end
 
-  return false
+  return IsKnownMountSaved(mount, mountID)
 end
 
 local function CollectionMatches(isCollected, mount)
   local unavailable = mount and IsMountUnavailable(mount)
 
-  if unavailable then
+  if currentMode ~= "pinned" and unavailable and not IsTradingPostMount(mount) then
     return false
   end
 
@@ -4007,7 +5181,11 @@ local function CollectionMatches(isCollected, mount)
 end
 
 local function FindMount(query)
-  AddJournalMountCatalog()
+  if ScheduleMountAtlasPreload then
+    ScheduleMountAtlasPreload(0)
+  else
+    AddJournalMountCatalog()
+  end
 
   local cleanQuery = Normalize(query)
 
@@ -4019,21 +5197,23 @@ local function FindMount(query)
   local firstPartialMatch
 
   for _, mount in ipairs(MountAtlasMounts or {}) do
-    local mountName = Normalize(mount.name)
-    local displayName = Normalize(GetMountDisplayName(mount))
+    if not IsMountUnavailable(mount) or IsTradingPostMount(mount) then
+      local mountName = Normalize(mount.name)
+      local displayName = Normalize(GetMountDisplayName(mount))
 
-    if mountID and mount.mountID == mountID then
-      return mount
-    end
+      if mountID and mount.mountID == mountID then
+        return mount
+      end
 
-    if mountName == cleanQuery or displayName == cleanQuery then
-      return mount
-    end
+      if mountName == cleanQuery or displayName == cleanQuery then
+        return mount
+      end
 
-    if not firstPartialMatch
-      and (string.find(mountName, cleanQuery, 1, true)
-        or string.find(displayName, cleanQuery, 1, true)) then
-      firstPartialMatch = mount
+      if not firstPartialMatch
+        and (string.find(mountName, cleanQuery, 1, true)
+          or string.find(displayName, cleanQuery, 1, true)) then
+        firstPartialMatch = mount
+      end
     end
   end
 
@@ -4659,8 +5839,10 @@ function CollectConfiguredProgressRequirements()
   local requirements = {}
 
   for _, mount in ipairs(MountAtlasMounts or {}) do
-    for _, requirement in ipairs(ExtractMountProgressRequirements(mount)) do
-      table.insert(requirements, requirement)
+    if not IsMountUnavailable(mount) then
+      for _, requirement in ipairs(ExtractMountProgressRequirements(mount)) do
+        table.insert(requirements, requirement)
+      end
     end
   end
 
@@ -5179,6 +6361,13 @@ function BuildEasyMissingItems()
   end
 
   table.sort(items, function(a, b)
+    local aPinned = IsFavoriteMount(a.mount)
+    local bPinned = IsFavoriteMount(b.mount)
+
+    if aPinned ~= bPinned then
+      return aPinned
+    end
+
     local aScore = GetEasyMountScore(a.mount)
     local bScore = GetEasyMountScore(b.mount)
 
@@ -5304,7 +6493,7 @@ local function BuildAchievementItems()
   for _, entry in ipairs(MountAtlasAchievements or {}) do
     local item = PassesAchievementFilters(entry) and CreateAchievementItem(entry)
 
-    if item and AchievementMatchesSearch(item) and CollectionMatches(item.completed) then
+    if item and AchievementMatchesSearch(item) and CollectionMatches(item.completed, item) then
       table.insert(items, item)
     end
   end
@@ -5318,11 +6507,13 @@ local function BuildSourceItems()
   local items = {}
   local achievementMountIDs = {}
 
-  if currentSourceFilter == "Achievement" or currentSourceFilter == "all" then
+  if currentSourceGroupFilter == "achievement"
+    or currentSourceFilter == "Achievement"
+    or currentSourceFilter == "all" then
     for _, entry in ipairs(MountAtlasAchievements or {}) do
       local item = PassesAchievementFilters(entry) and CreateAchievementItem(entry)
 
-      if item and AchievementMatchesSearch(item) and CollectionMatches(item.completed) then
+      if item and AchievementMatchesSearch(item) and CollectionMatches(item.completed, item) then
         if item.mountID then
           achievementMountIDs[item.mountID] = true
         end
@@ -5401,7 +6592,7 @@ local function BuildRouteItems()
   return items, L("noRouteMounts")
 end
 
-local function BuildFavoriteItems()
+local function BuildPinnedItems()
   local items = {}
 
   for _, mount in ipairs(MountAtlasMounts or {}) do
@@ -5418,44 +6609,21 @@ local function BuildFavoriteItems()
     end
   end
 
-  for _, entry in ipairs(MountAtlasAchievements or {}) do
-    if IsFavoriteAchievement(entry) and PassesAchievementFilters(entry) then
-      local item = CreateAchievementItem(entry)
+  SortMountItems(items)
 
-      if item and AchievementMatchesSearch(item) and CollectionMatches(item.completed) then
-        table.insert(items, item)
-      end
-    end
-  end
-
-  table.sort(items, function(a, b)
-    if a.kind ~= b.kind then
-      return a.kind == "mount"
-    end
-
-    if a.kind == "achievement" then
-      if a.completed ~= b.completed then
-        return not a.completed
-      end
-
-      if a.percent == b.percent then
-        return a.name < b.name
-      end
-
-      return a.percent > b.percent
-    end
-
-    return GetMountDisplayName(a.mount) < GetMountDisplayName(b.mount)
-  end)
-
-  return items, L("noFavorites")
+  return items, L("noPinnedMounts")
 end
 
 local function BuildItems()
-  AddJournalMountCatalog()
+  if ScheduleMountAtlasPreload then
+    ScheduleMountAtlasPreload(0)
+  else
+    AddJournalMountCatalog()
+  end
 
   local cacheKey = currentMode .. "\001"
     .. currentExpansionFilter .. "\001"
+    .. currentSourceGroupFilter .. "\001"
     .. currentSourceFilter .. "\001"
     .. currentCollectionFilter .. "\001"
     .. SearchText() .. "\001"
@@ -5468,17 +6636,15 @@ local function BuildItems()
   local items
   local emptyText
 
-  if currentMode == "favorites" then
-    items, emptyText = BuildFavoriteItems()
+  if currentMode == "pinned" then
+    items, emptyText = BuildPinnedItems()
   elseif currentMode == "missingEasy" then
     items, emptyText = BuildEasyMissingItems()
   elseif currentMode == "achievements" then
     items, emptyText = BuildAchievementItems()
-  elseif currentMode == "sources" then
-    items, emptyText = BuildSourceItems()
   elseif currentMode == "routes" then
     items, emptyText = BuildRouteItems()
-  elseif currentMode == "reputation" or currentMode == "events" then
+  elseif currentMode == "events" then
     items, emptyText = BuildMountItems("all"), L("noSourceMounts")
   else
     items, emptyText = BuildMountItems(currentMode), L("noPendingMounts")
@@ -5489,6 +6655,61 @@ local function BuildItems()
   MountAtlasRuntime.itemListCacheEmptyText = emptyText
 
   return items, emptyText
+end
+
+function CountMountResultsIgnoringCollection(mode, predicate)
+  local total = 0
+
+  for _, mount in ipairs(MountAtlasMounts or {}) do
+    if (not predicate or predicate(mount))
+      and ShouldShowMount(mount, mode)
+      and PassesMountFilters(mount)
+      and MountMatchesSearch(mount) then
+      total = total + 1
+    end
+  end
+
+  return total
+end
+
+function CountAchievementResultsIgnoringCollection(favoritesOnly)
+  local total = 0
+
+  for _, entry in ipairs(MountAtlasAchievements or {}) do
+    if (not favoritesOnly or IsFavoriteAchievement(entry)) and PassesAchievementFilters(entry) then
+      local item = CreateAchievementItem(entry)
+
+      if item and AchievementMatchesSearch(item) then
+        total = total + 1
+      end
+    end
+  end
+
+  return total
+end
+
+function CountResultsIgnoringCollection(visibleItemCount)
+  if currentMode == "achievements" then
+    return CountAchievementResultsIgnoringCollection(false)
+  end
+
+  if currentMode == "pinned" then
+    return CountMountResultsIgnoringCollection("all", IsFavoriteMount)
+  end
+
+  if currentMode == "missingEasy" then
+    return visibleItemCount
+  end
+
+  if currentMode == "routes" then
+    return CountMountResultsIgnoringCollection("all", HasFarmRoute)
+  end
+
+  if currentMode == "events" then
+    return CountMountResultsIgnoringCollection("all")
+  end
+
+  return CountMountResultsIgnoringCollection(currentMode)
 end
 
 local function CountAttempted(items)
@@ -5510,7 +6731,7 @@ local function CountMountsForMode(mode)
   for _, mount in ipairs(MountAtlasMounts or {}) do
     if ShouldShowMount(mount, mode)
       and (not ShouldRequireActiveEventForMode(mode) or IsEventMountAvailable(mount))
-      and not IsMountUnavailable(mount)
+      and (not IsMountUnavailable(mount) or IsTradingPostMount(mount))
       and not HasMount(mount) then
       total = total + 1
 
@@ -5533,16 +6754,18 @@ local function GetCollectionStats()
   local favorites = 0
 
   for _, mount in ipairs(MountAtlasMounts or {}) do
-    if IsExpansionEnabled(GetMountExpansion(mount)) and not IsMountUnavailable(mount) then
+    if IsFavoriteMount(mount) then
+      favorites = favorites + 1
+    end
+
+    if IsExpansionEnabled(GetMountExpansion(mount))
+      and (not IsMountUnavailable(mount) or IsTradingPostMount(mount)) then
       total = total + 1
 
       if HasMount(mount) then
         collected = collected + 1
       end
 
-      if IsFavoriteMount(mount) then
-        favorites = favorites + 1
-      end
     end
   end
 
@@ -5558,33 +6781,23 @@ local function GetCollectionStats()
 end
 
 function GetJournalCollectionCounts()
-  local total = 0
-  local collected = 0
+  if MountAtlasRuntime.mountJournalNameCacheReady
+    and MountAtlasRuntime.journalCollectionTotal
+    and MountAtlasRuntime.journalCollectionCollected then
+    return MountAtlasRuntime.journalCollectionCollected, MountAtlasRuntime.journalCollectionTotal
+  end
 
   if not C_MountJournal or not C_MountJournal.GetMountIDs then
-    return collected, total
+    return 0, 0
   end
 
   local mountIDs = SafeCall(C_MountJournal.GetMountIDs)
+  local total = type(mountIDs) == "table" and #mountIDs or 0
+  local collected = 0
 
-  if type(mountIDs) ~= "table" then
-    return collected, total
-  end
-
-  for _, mountID in ipairs(mountIDs) do
-    local info = GetJournalMountInfo(mountID)
-    local extra = GetJournalMountExtra(mountID) or {}
-
-    if info and not IsMountUnavailable({
-      name = info.name,
-      mountID = mountID,
-      sourceType = info.sourceType,
-      source = InferJournalMountSource(info.sourceType, extra.sourceText or extra.description, info.name),
-      journalSource = extra.sourceText or extra.description
-    }) then
-      total = total + 1
-
-      if info.isCollected then
+  if type(MountAtlasDB) == "table" and type(MountAtlasDB.knownMounts) == "table" then
+    for key, value in pairs(MountAtlasDB.knownMounts) do
+      if value == true and tonumber(key) then
         collected = collected + 1
       end
     end
@@ -5642,14 +6855,128 @@ function GetNewMountAlertStats(mountID, mountName)
   }
 end
 
+function MountAtlasMarkKnownMount(knownMounts, mountID, info)
+  if type(knownMounts) ~= "table" then
+    return
+  end
+
+  if mountID then
+    knownMounts[tostring(mountID)] = true
+  end
+
+  if info and info.spellID then
+    knownMounts["spell:" .. tostring(info.spellID)] = true
+  end
+
+  if info and info.name and info.name ~= "" then
+    knownMounts["name:" .. Normalize(info.name)] = true
+  end
+end
+
+function MountAtlasIsKnownMountMarked(knownMounts, mountID, info)
+  if type(knownMounts) ~= "table" then
+    return false
+  end
+
+  if mountID and knownMounts[tostring(mountID)] == true then
+    return true
+  end
+
+  if info and info.spellID and knownMounts["spell:" .. tostring(info.spellID)] == true then
+    return true
+  end
+
+  if info and info.name and info.name ~= "" and knownMounts["name:" .. Normalize(info.name)] == true then
+    return true
+  end
+
+  return false
+end
+
+function MountAtlasFinishKnownMountCollectionScan()
+  local newMounts = MountAtlasRuntime.mountScanNewMounts or {}
+
+  MountAtlasDB.knownMounts = MountAtlasRuntime.mountScanKnownMounts or MountAtlasDB.knownMounts or {}
+  MountAtlasDB.knownMountsInitialized = true
+  MountAtlasRuntime.mountScanActive = nil
+  MountAtlasRuntime.mountScanMountIDs = nil
+  MountAtlasRuntime.mountScanIndex = nil
+  MountAtlasRuntime.mountScanKnownMounts = nil
+  MountAtlasRuntime.mountScanInitialized = nil
+  MountAtlasRuntime.mountScanNewMounts = nil
+  MountAtlasRuntime.mountScanShouldAlert = false
+  InvalidateMountAtlasDataCache()
+
+  for _, mountInfo in ipairs(newMounts) do
+    QueueNewMountAlert(mountInfo.mountID, mountInfo.name)
+  end
+
+  if mainFrame and mainFrame:IsShown() then
+    QueueRefreshWindow(0.05)
+  end
+end
+
+function MountAtlasProcessKnownMountCollectionBatch()
+  if not MountAtlasRuntime.mountScanActive then
+    return
+  end
+
+  local mountIDs = MountAtlasRuntime.mountScanMountIDs
+
+  if type(mountIDs) ~= "table" then
+    MountAtlasFinishKnownMountCollectionScan()
+    return
+  end
+
+  local knownMounts = MountAtlasRuntime.mountScanKnownMounts or {}
+  local initialized = MountAtlasRuntime.mountScanInitialized == true
+  local shouldAlert = MountAtlasRuntime.mountScanShouldAlert == true
+  local newMounts = MountAtlasRuntime.mountScanNewMounts or {}
+  local index = MountAtlasRuntime.mountScanIndex or 1
+  local lastIndex = math.min(#mountIDs, index + MOUNT_ATLAS_COLLECTION_SCAN_BATCH_SIZE - 1)
+
+  while index <= lastIndex do
+    local mountID = mountIDs[index]
+    local info = GetJournalMountInfo(mountID)
+
+    if info and info.isCollected then
+      if not MountAtlasIsKnownMountMarked(knownMounts, mountID, info) then
+        if shouldAlert and initialized then
+          table.insert(newMounts, {
+            mountID = mountID,
+            name = info.name
+          })
+        end
+      end
+
+      MountAtlasMarkKnownMount(knownMounts, mountID, info)
+    end
+
+    index = index + 1
+  end
+
+  MountAtlasRuntime.mountScanKnownMounts = knownMounts
+  MountAtlasRuntime.mountScanNewMounts = newMounts
+  MountAtlasRuntime.mountScanIndex = index
+
+  if index <= #mountIDs then
+    MountAtlasQueueRuntimeTask(MOUNT_ATLAS_COLLECTION_SCAN_BATCH_DELAY, MountAtlasProcessKnownMountCollectionBatch)
+  else
+    MountAtlasFinishKnownMountCollectionScan()
+  end
+end
+
 function CaptureKnownMountCollection(showAlerts)
   EnsureDB()
+
+  if MountAtlasRuntime.mountScanActive then
+    MountAtlasRuntime.mountScanShouldAlert = MountAtlasRuntime.mountScanShouldAlert or showAlerts
+    return
+  end
 
   if not C_MountJournal or not C_MountJournal.GetMountIDs then
     return
   end
-
-  InvalidateMountJournalCaches()
 
   local mountIDs = SafeCall(C_MountJournal.GetMountIDs)
 
@@ -5657,39 +6984,22 @@ function CaptureKnownMountCollection(showAlerts)
     return
   end
 
-  local knownMounts = MountAtlasDB.knownMounts or {}
-  local initialized = MountAtlasDB.knownMountsInitialized == true
-  local newMounts = {}
-
-  for _, mountID in ipairs(mountIDs) do
-    local info = GetJournalMountInfo(mountID)
-
-    if info and info.isCollected then
-      local key = tostring(mountID)
-
-      if not knownMounts[key] then
-        knownMounts[key] = true
-
-        if showAlerts and initialized then
-          table.insert(newMounts, {
-            mountID = mountID,
-            name = info.name
-          })
-        end
-      end
-    end
-  end
-
-  MountAtlasDB.knownMounts = knownMounts
-  MountAtlasDB.knownMountsInitialized = true
-
-  for _, mountInfo in ipairs(newMounts) do
-    QueueNewMountAlert(mountInfo.mountID, mountInfo.name)
-  end
+  MountAtlasRuntime.mountScanMountIDs = mountIDs
+  MountAtlasRuntime.mountScanIndex = 1
+  MountAtlasRuntime.mountScanKnownMounts = MountAtlasDB.knownMounts or {}
+  MountAtlasRuntime.mountScanInitialized = MountAtlasDB.knownMountsInitialized == true
+  MountAtlasRuntime.mountScanNewMounts = {}
+  MountAtlasRuntime.mountScanShouldAlert = MountAtlasRuntime.mountScanShouldAlert or showAlerts
+  MountAtlasRuntime.mountScanActive = true
+  MountAtlasQueueRuntimeTask(0, MountAtlasProcessKnownMountCollectionBatch)
 end
 
 function ScheduleMountCollectionScan(showAlerts)
   MountAtlasRuntime.mountScanShouldAlert = MountAtlasRuntime.mountScanShouldAlert or showAlerts
+
+  if MountAtlasRuntime.mountScanActive then
+    return
+  end
 
   if MountAtlasRuntime.mountScanQueued then
     return
@@ -5702,18 +7012,12 @@ function ScheduleMountCollectionScan(showAlerts)
       local shouldAlert = MountAtlasRuntime.mountScanShouldAlert == true
 
       MountAtlasRuntime.mountScanQueued = false
-      MountAtlasRuntime.mountScanShouldAlert = false
       CaptureKnownMountCollection(shouldAlert)
-
-      if mainFrame and mainFrame:IsShown() then
-        QueueRefreshWindow(0.05)
-      end
     end)
   else
     local shouldAlert = MountAtlasRuntime.mountScanShouldAlert == true
 
     MountAtlasRuntime.mountScanQueued = false
-    MountAtlasRuntime.mountScanShouldAlert = false
     CaptureKnownMountCollection(shouldAlert)
   end
 end
@@ -5752,7 +7056,7 @@ function BuildExpansionProgressStats()
   for _, mount in ipairs(MountAtlasMounts or {}) do
     local expansion = GetMountExpansion(mount)
 
-    if IsExpansionEnabled(expansion) and not IsMountUnavailable(mount) then
+    if IsExpansionEnabled(expansion) and (not IsMountUnavailable(mount) or IsTradingPostMount(mount)) then
       if not stats[expansion] then
         stats[expansion] = {
           expansion = expansion,
@@ -5850,23 +7154,21 @@ function ShortenText(text, maxLength)
 end
 
 function GetSmartPriorityScope()
-  if currentMode == "weekly" then
+  local visibleMode = type(NormalizeVisibleMode) == "function" and NormalizeVisibleMode(currentMode) or currentMode
+
+  if visibleMode == "weekly" then
     return "weekly", L("priorityWeeklyTitle")
   end
 
-  if currentMode == "reputation" then
-    return "reputation", L("priorityReputationTitle")
-  end
-
-  if currentMode == "events" then
+  if visibleMode == "events" then
     return "events", L("priorityEventsTitle")
   end
 
-  if currentMode == "routes" then
+  if visibleMode == "routes" then
     return "routes", L("priorityRoutesTitle")
   end
 
-  if currentMode == "missingEasy" then
+  if visibleMode == "missingEasy" then
     return "missingEasy", L("missingEasyPriorityTitle")
   end
 
@@ -5882,6 +7184,10 @@ function PriorityScopeMatches(mount, scope)
 
   if scope == "reputation" then
     return SourceMatches(source, "Reputation")
+  end
+
+  if scope == "tradingpost" then
+    return GetSourceGroup(source) == "tradingpost"
   end
 
   if scope == "events" then
@@ -6056,6 +7362,7 @@ function BuildSmartPriorityPlan()
   local scope, title = GetSmartPriorityScope()
   local cacheKey = scope .. "\001"
     .. currentExpansionFilter .. "\001"
+    .. currentSourceGroupFilter .. "\001"
     .. tostring(MountAtlasRuntime.cacheRevision)
 
   if MountAtlasRuntime.priorityPlanCacheKey == cacheKey and MountAtlasRuntime.priorityPlanCache then
@@ -6147,8 +7454,8 @@ function GetPriorityFocusMode(mount)
     return "events"
   end
 
-  if SourceMatches(GetMountSource(mount), "Reputation") then
-    return "reputation"
+  if IsTradingPostMount(mount) then
+    return "today"
   end
 
   if mount.reset == "weekly" then
@@ -6163,7 +7470,7 @@ function GetPriorityFocusMode(mount)
     return "routes"
   end
 
-  return "all"
+  return "today"
 end
 
 function FocusPriorityMount(mount)
@@ -6171,8 +7478,9 @@ function FocusPriorityMount(mount)
     return
   end
 
-  currentMode = GetPriorityFocusMode(mount)
-  currentExpansionFilter = "all"
+  TransitionVisibleMode(GetPriorityFocusMode(mount))
+  currentExpansionFilter = IsTradingPostMount(mount) and "Trading Post" or "all"
+  currentSourceGroupFilter = "all"
   currentSourceFilter = "all"
   currentCollectionFilter = "missing"
   currentSearchText = GetMountDisplayName(mount)
@@ -6190,6 +7498,10 @@ end
 
 function UpdateSmartPriorityPanel()
   if not mainFrame or not mainFrame.priorityPlanTitle then
+    return
+  end
+
+  if mainFrame.priorityPanelHidden then
     return
   end
 
@@ -6519,22 +7831,10 @@ function SetButtonSelected(button, isSelected)
 end
 
 function ShowAllMountsForExpansion()
-  if currentMode ~= "achievements"
-    and currentMode ~= "favorites"
-    and currentMode ~= "missingEasy"
-    and currentMode ~= "sources"
-    and currentMode ~= "reputation"
-    and currentMode ~= "events"
-    and currentMode ~= "routes" then
-    currentMode = "all"
-  end
-
-  if currentMode ~= "sources"
-    and currentMode ~= "missingEasy"
-    and currentMode ~= "reputation"
-    and currentMode ~= "events"
-    and currentMode ~= "routes" then
-    currentSourceFilter = "all"
+  if currentMode == "sources"
+    or currentMode == "reputation"
+    or currentMode == "tradingpost" then
+    currentMode = "today"
   end
 
   ResetListScroll()
@@ -6542,14 +7842,10 @@ function ShowAllMountsForExpansion()
 end
 
 function ShowAllMountsForSource()
-  if currentMode ~= "achievements"
-    and currentMode ~= "favorites"
-    and currentMode ~= "missingEasy"
-    and currentMode ~= "sources"
-    and currentMode ~= "reputation"
-    and currentMode ~= "events"
-    and currentMode ~= "routes" then
-    currentMode = "all"
+  if currentMode == "sources"
+    or currentMode == "reputation"
+    or currentMode == "tradingpost" then
+    currentMode = "today"
   end
 
   ResetListScroll()
@@ -6557,24 +7853,14 @@ function ShowAllMountsForSource()
 end
 
 ApplyModeDefaults = function(mode)
-  if mode == "sources" and currentSourceFilter == "all" then
-    currentSourceFilter = "Vendor"
-  end
-
-  if mode == "reputation" then
-    currentSourceFilter = "Reputation"
-  end
+  currentSourceGroupFilter = "all"
+  currentSourceFilter = "all"
 
   if mode == "events" then
-    currentSourceFilter = "Event"
-  end
-
-  if mode == "routes" then
-    currentSourceFilter = "all"
+    currentSourceGroupFilter = "event"
   end
 
   if mode == "missingEasy" then
-    currentSourceFilter = "all"
     currentCollectionFilter = "missing"
   end
 end
@@ -6584,61 +7870,49 @@ UpdateFilterButtons = function()
     return
   end
 
-  mainFrame.expansionButton:SetText(L("filterExpansion") .. ": " .. GetOptionLabel(expansionFilterOptions, currentExpansionFilter))
-  mainFrame.sourceButton:SetText((currentMode == "sources" and L("filterSource") or L("filterType"))
-    .. ": " .. GetSourceDisplayName(currentSourceFilter))
-  mainFrame.collectionButton:SetText(L("filterCollection") .. ": "
-    .. GetOptionLabel(collectionFilterOptions, currentCollectionFilter))
+  local defaultSourceGroupFilter = currentMode == "events" and "event" or "all"
+  local defaultCollectionFilter = currentMode == "pinned" and "all" or "missing"
 
-  if mainFrame.filterToggleButton then
-    mainFrame.filterToggleButton:SetText(filtersAdvancedOpen and L("buttonHideFilters") or L("buttonFilters"))
+  if currentMode == "events" and currentSourceGroupFilter == "all" then
+    currentSourceGroupFilter = "event"
+    currentSourceFilter = "all"
   end
 
-  if mainFrame.searchLabel then
-    mainFrame.searchLabel:ClearAllPoints()
+  local groupOptions, sourceOptions = NormalizeAvailableSourceFilters()
 
-    if filtersAdvancedOpen then
-      mainFrame.sourceButton:Show()
-      mainFrame.collectionButton:Show()
-      mainFrame.clearFilterButton:Show()
-      mainFrame.searchLabel:SetPoint("LEFT", mainFrame.clearFilterButton, "RIGHT", 10, 0)
+  mainFrame.expansionButton:SetText(GetOptionLabel(expansionFilterOptions, currentExpansionFilter))
 
-      if mainFrame.searchBox then
-        mainFrame.searchBox:SetWidth(205)
-      end
-    else
-      mainFrame.sourceButton:Hide()
-      mainFrame.collectionButton:Hide()
-      mainFrame.clearFilterButton:Hide()
-      mainFrame.searchLabel:SetPoint("LEFT", mainFrame.filterToggleButton, "RIGHT", 10, 0)
-
-      if mainFrame.searchBox then
-        mainFrame.searchBox:SetWidth(310)
-      end
-    end
+  if mainFrame.sourceGroupButton then
+    mainFrame.sourceGroupButton:SetText(GetOptionLabel(groupOptions, currentSourceGroupFilter))
+    mainFrame.sourceGroupButton:Show()
   end
 
-  if currentMode == "reputation" or currentMode == "events" then
-    mainFrame.sourceButton:Disable()
-    StyleFont(mainFrame.sourceButton:GetFontString(), 10, 0.78, 0.76, 0.68, "OUTLINE")
-  else
-    mainFrame.sourceButton:Enable()
-    StyleButton(mainFrame.sourceButton)
+  if mainFrame.sourceGroupLabel then
+    mainFrame.sourceGroupLabel:Show()
   end
 
-  local defaultSourceFilter = "all"
-
-  if currentMode == "sources" then
-    defaultSourceFilter = "Vendor"
-  elseif currentMode == "reputation" then
-    defaultSourceFilter = "Reputation"
-  elseif currentMode == "events" then
-    defaultSourceFilter = "Event"
+  if mainFrame.sourceButton then
+    mainFrame.sourceButton:SetText(GetOptionLabel(sourceOptions, currentSourceFilter))
+    mainFrame.sourceButton:Show()
   end
+
+  if mainFrame.sourceLabel then
+    mainFrame.sourceLabel:Show()
+  end
+
+  mainFrame.collectionButton:SetText(GetOptionLabel(collectionFilterOptions, currentCollectionFilter))
+  mainFrame.collectionButton:Show()
+  mainFrame.clearFilterButton:Show()
+
+  StyleButton(mainFrame.expansionButton)
+  StyleButton(mainFrame.sourceGroupButton)
+  StyleButton(mainFrame.sourceButton)
+  StyleButton(mainFrame.collectionButton)
 
   if currentExpansionFilter == "all"
-    and currentSourceFilter == defaultSourceFilter
-    and currentCollectionFilter == "missing"
+    and currentSourceGroupFilter == defaultSourceGroupFilter
+    and currentSourceFilter == "all"
+    and currentCollectionFilter == defaultCollectionFilter
     and SearchText() == "" then
     mainFrame.clearFilterButton:Disable()
   else
@@ -6680,6 +7954,10 @@ function SetRowHover(row, isHovered)
       row.topLine:SetColorTexture(0.22, 0.36, 0.56, 0.48)
     end
   end
+
+  if row.favButton then
+    row.favButton:Show()
+  end
 end
 
 function GetMountDisplayID(mount)
@@ -6715,6 +7993,10 @@ function GetMountIcon(mount)
       return cachedIcon
     end
 
+    if not MountAtlasRuntime.mountJournalNameCacheReady then
+      return DEFAULT_MOUNT_ICON
+    end
+
     local info = GetJournalMountInfo(journalID)
 
     if info and info.icon then
@@ -6725,23 +8007,43 @@ function GetMountIcon(mount)
   return DEFAULT_MOUNT_ICON
 end
 
-function AddTomTomWaypoint(mount)
-  local command = SafeCall(GetMountTomTomCommand, mount)
+function MountAtlasSendTomTomCommands(commands, label)
+  if type(commands) ~= "table" or #commands == 0 then
+    return false
+  end
 
-  if not command or command == "" then
+  if SlashCmdList and SlashCmdList["TOMTOM_WAY"] then
+    for _, command in ipairs(commands) do
+      local tomtomCommand = tostring(command or ""):gsub("^/way%s*", "")
+
+      if tomtomCommand ~= "" then
+        SafeCall(SlashCmdList["TOMTOM_WAY"], tomtomCommand)
+      end
+    end
+
+    if #commands > 1 then
+      Print(L("waypointRouteAdded", label, #commands))
+    else
+      Print(L("waypointAdded", label))
+    end
+
+    return true
+  end
+
+  Print(L("waypointCommand", table.concat(commands, "\n")))
+
+  return true
+end
+
+function AddTomTomWaypoint(mount)
+  local commands = SafeCall(GetMountTomTomCommands, mount)
+
+  if type(commands) ~= "table" or #commands == 0 then
     Print(L("waypointUnavailable"))
     return
   end
 
-  local tomtomCommand = command:gsub("^/way%s*", "")
-
-  if SlashCmdList and SlashCmdList["TOMTOM_WAY"] then
-    SafeCall(SlashCmdList["TOMTOM_WAY"], tomtomCommand)
-    Print(L("waypointAdded", SafeCall(GetMountDisplayName, mount) or L("previewMount")))
-    return
-  end
-
-  Print(L("waypointCommand", command))
+  MountAtlasSendTomTomCommands(commands, SafeCall(GetMountDisplayName, mount) or L("previewMount"))
 end
 
 local function EnsureGuideLinkPopup()
@@ -6807,7 +8109,7 @@ function BuildDailyRouteSteps()
       and not HasMount(mount)
       and (not skipAttempted or not IsAttempted(mount))
       and PriorityScopeMatches(mount, "today") then
-      local hasWaypoint = GetMountTomTomCommand(mount) ~= nil
+      local hasWaypoint = MountAtlasHasTomTomWaypoint(mount)
       local score = GetPriorityScore(mount, "today")
 
       if hasWaypoint then
@@ -6843,6 +8145,26 @@ function BuildDailyRouteSteps()
   return steps
 end
 
+function MountAtlasBuildDailyRouteTomTomCommands(steps)
+  local commands = {}
+  local seen = {}
+
+  for _, step in ipairs(steps or {}) do
+    if step and step.mount then
+      for _, command in ipairs(GetMountTomTomCommands(step.mount)) do
+        local key = Normalize(command)
+
+        if key ~= "" and not seen[key] then
+          table.insert(commands, command)
+          seen[key] = true
+        end
+      end
+    end
+  end
+
+  return commands
+end
+
 function UpdateDailyRoutePanel()
   if not mainFrame or not mainFrame.dailyRouteStatus then
     return
@@ -6867,7 +8189,7 @@ function UpdateDailyRoutePanel()
   mainFrame.dailyRouteButton:SetText(L("dailyRouteStart"))
 end
 
-function RunDailyRouteStep(index)
+function RunDailyRouteStep(index, skipWaypoint)
   local route = MountAtlasRuntime.dailyRoute
 
   if not route or type(route.steps) ~= "table" then
@@ -6886,7 +8208,7 @@ function RunDailyRouteStep(index)
   route.index = index
   FocusPriorityMount(step.mount)
 
-  if GetMountAtlasOption("dailyRouteAutoWaypoint") then
+  if GetMountAtlasOption("dailyRouteAutoWaypoint") and skipWaypoint ~= true and route.fullWaypointsSent ~= true then
     if GetMountTomTomCommand(step.mount) then
       AddTomTomWaypoint(step.mount)
     else
@@ -6913,7 +8235,15 @@ function StartDailyRoute()
     index = 1
   }
 
-  RunDailyRouteStep(1)
+  if GetMountAtlasOption("dailyRouteAutoWaypoint") then
+    local routeCommands = MountAtlasBuildDailyRouteTomTomCommands(steps)
+
+    if #routeCommands > 0 then
+      MountAtlasRuntime.dailyRoute.fullWaypointsSent = MountAtlasSendTomTomCommands(routeCommands, L("optionsSectionDailyRoute")) == true
+    end
+  end
+
+  RunDailyRouteStep(1, MountAtlasRuntime.dailyRoute.fullWaypointsSent == true)
 end
 
 function AdvanceDailyRoute()
@@ -6972,9 +8302,13 @@ local function ScrollPreviewDetails(delta)
   scrollFrame:SetVerticalScroll(math.max(0, math.min(maxScroll, nextScroll)))
 end
 
-ClearMountPreview = function(message)
+ClearMountPreview = function(message, preserveSelection)
   if not mainFrame or not mainFrame.previewPanel then
     return
+  end
+
+  if not preserveSelection then
+    selectedPreviewMount = nil
   end
 
   mainFrame.previewName:SetText(L("previewMount"))
@@ -6996,6 +8330,7 @@ ClearMountPreview = function(message)
 
   if mainFrame.previewModel then
     mainFrame.previewModel.displayActive = false
+    mainFrame.previewModel.previewUpdateElapsed = 0
     SafeCall(mainFrame.previewModel.ClearModel, mainFrame.previewModel)
     mainFrame.previewModel:Hide()
   end
@@ -7048,6 +8383,8 @@ ShowMountPreview = function(mount)
     return
   end
 
+  selectedPreviewMount = mount
+
   local displayID = SafeCall(GetMountDisplayID, mount)
   local details = SafeCall(BuildMountPreviewDetails, mount)
   local mountName = SafeCall(GetMountDisplayName, mount) or L("previewMount")
@@ -7095,6 +8432,7 @@ ShowMountPreview = function(mount)
     mainFrame.previewEmptyText:Hide()
     mainFrame.previewModel:Show()
     mainFrame.previewModel.displayActive = true
+    mainFrame.previewModel.previewUpdateElapsed = 0
     mainFrame.previewModel.previewFacing = -0.35
 
     SafeCall(mainFrame.previewModel.ClearModel, mainFrame.previewModel)
@@ -7108,6 +8446,7 @@ ShowMountPreview = function(mount)
 
     if mainFrame.previewModel then
       mainFrame.previewModel.displayActive = false
+      mainFrame.previewModel.previewUpdateElapsed = 0
       SafeCall(mainFrame.previewModel.ClearModel, mainFrame.previewModel)
       mainFrame.previewModel:Hide()
     end
@@ -7156,37 +8495,39 @@ function CreateStatCard(parent, key, x, color)
   local card = CreateFrame("Frame", nil, parent)
 
   color = color or UI_THEME.gold
-  card:SetSize(176, 54)
-  card:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -82)
-  DecoratePanel(card, UI_THEME.panel, color, 0.82, 0.34)
+  card:SetSize(194, 42)
+  card:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -70)
+  DecoratePanel(card, UI_THEME.panel, color, 0.58, 0.24)
 
   card.icon = card:CreateTexture(nil, "ARTWORK")
-  card.icon:SetSize(30, 30)
-  card.icon:SetPoint("LEFT", card, "LEFT", 12, 0)
+  card.icon:SetSize(1, 1)
+  card.icon:SetPoint("LEFT", card, "LEFT", 4, 0)
   card.icon:SetTexture(DEFAULT_MOUNT_ICON)
   card.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-  card.icon:SetVertexColor(color[1], color[2], color[3], 0.62)
+  card.icon:Hide()
 
   card.label = card:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  card.label:SetPoint("TOPLEFT", card, "TOPLEFT", 52, -7)
-  card.label:SetWidth(116)
+  card.label:SetPoint("TOPLEFT", card, "TOPLEFT", 10, -6)
+  card.label:SetWidth(114)
   card.label:SetJustifyH("LEFT")
   card.label:SetText(L(key))
-  StyleFont(card.label, 9, 0.72, 0.78, 0.88, "OUTLINE")
+  SafeCall(card.label.SetWordWrap, card.label, false)
+  StyleFont(card.label, 8, 0.72, 0.78, 0.88, "OUTLINE")
 
   card.value = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-  card.value:SetPoint("TOPLEFT", card, "TOPLEFT", 52, -20)
-  card.value:SetWidth(116)
-  card.value:SetJustifyH("LEFT")
+  card.value:SetPoint("TOPRIGHT", card, "TOPRIGHT", -10, -10)
+  card.value:SetWidth(54)
+  card.value:SetJustifyH("RIGHT")
   card.value:SetText("0")
-  StyleFont(card.value, 20, 1, 1, 1, "OUTLINE")
+  StyleFont(card.value, 18, 1, 1, 1, "OUTLINE")
 
   card.sub = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  card.sub:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 52, 5)
-  card.sub:SetWidth(116)
+  card.sub:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 10, 5)
+  card.sub:SetWidth(174)
   card.sub:SetJustifyH("LEFT")
   card.sub:SetText("")
-  StyleFont(card.sub, 9, 0.74, 0.78, 0.88, "OUTLINE")
+  SafeCall(card.sub.SetWordWrap, card.sub, false)
+  StyleFont(card.sub, 8, 0.74, 0.78, 0.88, "OUTLINE")
 
   return card
 end
@@ -7198,19 +8539,6 @@ function UpdateStatCard(card, value, subText)
 
   card.value:SetText(tostring(value or 0))
   card.sub:SetText(subText or "")
-end
-
-function CreateTabButton(parent, label, mode, x)
-  local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-  button:SetSize(92, 32)
-  button:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -34)
-  button:SetText(label)
-  DecorateButton(button, MODE_COLORS[mode] or UI_THEME.gold, 0.2)
-  button:SetScript("OnClick", function()
-    SetMode(mode)
-  end)
-
-  return button
 end
 
 function CreateOptionsCheck(parent, yOffset, label, getter, setter)
@@ -7406,12 +8734,50 @@ function CreateOptionsPanel(parent)
   return panel
 end
 
+local function RegisterUISpecialFrame(frameName)
+  if type(UISpecialFrames) ~= "table" or not frameName then
+    return
+  end
+
+  for _, registeredFrameName in ipairs(UISpecialFrames) do
+    if registeredFrameName == frameName then
+      return
+    end
+  end
+
+  table.insert(UISpecialFrames, frameName)
+end
+
+function SyncMountAtlasWindowScale()
+  if not mainFrame or not UIParent then
+    return
+  end
+
+  local parent = mainFrame:GetParent()
+
+  if not parent or parent == UIParent or not parent.GetEffectiveScale then
+    mainFrame:SetScale(1)
+    return
+  end
+
+  local uiScale = UIParent:GetEffectiveScale()
+  local parentScale = parent:GetEffectiveScale()
+
+  if uiScale and parentScale and parentScale > 0 then
+    mainFrame:SetScale(uiScale / parentScale)
+  end
+end
+
 function CreateWindow()
   if mainFrame then
     return
   end
 
-  mainFrame = CreateFrame("Frame", "MountAtlasFrame", UIParent, "BasicFrameTemplateWithInset")
+  local windowParent = WorldFrame or UIParent
+
+  mainFrame = CreateFrame("Frame", "MountAtlasFrame", windowParent, "BasicFrameTemplateWithInset")
+  RegisterUISpecialFrame("MountAtlasFrame")
+  SyncMountAtlasWindowScale()
   mainFrame:SetSize(FRAME_WIDTH, FRAME_HEIGHT)
   mainFrame:SetPoint("CENTER")
   mainFrame:SetFrameStrata("DIALOG")
@@ -7426,6 +8792,11 @@ function CreateWindow()
   mainFrame:SetScript("OnMouseWheel", function(_, delta)
     ScrollList(delta)
   end)
+  mainFrame:SetScript("OnHide", function(self)
+    if self.optionsPanel then
+      self.optionsPanel:Hide()
+    end
+  end)
   mainFrame:Hide()
 
   mainFrame.windowBackground = mainFrame:CreateTexture(nil, "BACKGROUND")
@@ -7434,7 +8805,7 @@ function CreateWindow()
   mainFrame.windowBackground:SetColorTexture(0.006, 0.01, 0.026, 0.96)
 
   mainFrame.bodyBackground = mainFrame:CreateTexture(nil, "BACKGROUND", nil, 1)
-  mainFrame.bodyBackground:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -72)
+  mainFrame.bodyBackground:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 10, -62)
   mainFrame.bodyBackground:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -10, 10)
   mainFrame.bodyBackground:SetColorTexture(0.012, 0.016, 0.034, 0.92)
 
@@ -7451,8 +8822,8 @@ function CreateWindow()
   mainFrame.outerBottomLine:SetColorTexture(0.1, 0.64, 1, 0.35)
 
   mainFrame.headerLine = mainFrame:CreateTexture(nil, "BORDER")
-  mainFrame.headerLine:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 18, -72)
-  mainFrame.headerLine:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -18, -72)
+  mainFrame.headerLine:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 18, -62)
+  mainFrame.headerLine:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -18, -62)
   mainFrame.headerLine:SetHeight(1)
   mainFrame.headerLine:SetColorTexture(0.95, 0.63, 0.12, 0.45)
 
@@ -7472,21 +8843,9 @@ function CreateWindow()
   mainFrame.subtitleText:SetText(L("addonSubtitle"))
   StyleFont(mainFrame.subtitleText, 11, 0.95, 0.95, 1, "OUTLINE")
 
-  mainFrame.tabs = {
-    today = CreateTabButton(mainFrame, L("modeToday"), "today", CONTENT_LEFT),
-    weekly = CreateTabButton(mainFrame, L("modeWeekly"), "weekly", CONTENT_LEFT + 96),
-    all = CreateTabButton(mainFrame, L("modeAll"), "all", CONTENT_LEFT + 192),
-    favorites = CreateTabButton(mainFrame, L("modeFavorites"), "favorites", CONTENT_LEFT + 288),
-    achievements = CreateTabButton(mainFrame, L("modeAchievements"), "achievements", CONTENT_LEFT + 384),
-    sources = CreateTabButton(mainFrame, L("modeSources"), "sources", CONTENT_LEFT + 480),
-    reputation = CreateTabButton(mainFrame, L("modeReputation"), "reputation", CONTENT_LEFT + 576),
-    events = CreateTabButton(mainFrame, L("modeEvents"), "events", CONTENT_LEFT + 672),
-    routes = CreateTabButton(mainFrame, L("modeRoutes"), "routes", CONTENT_LEFT + 768)
-  }
-
   mainFrame.refreshButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
   mainFrame.refreshButton:SetSize(86, 26)
-  mainFrame.refreshButton:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -38, -37)
+  mainFrame.refreshButton:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -38, -25)
   mainFrame.refreshButton:SetText(L("buttonRefresh"))
   DecorateButton(mainFrame.refreshButton, UI_THEME.gold, 0.18)
   mainFrame.refreshButton:SetScript("OnClick", function()
@@ -7496,62 +8855,42 @@ function CreateWindow()
   end)
 
   mainFrame.sidebar = CreateFrame("Frame", nil, mainFrame)
-  mainFrame.sidebar:SetSize(SIDEBAR_WIDTH, 494)
-  mainFrame.sidebar:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 18, -82)
-  DecoratePanel(mainFrame.sidebar, UI_THEME.panel, UI_THEME.goldSoft, 0.9, 0.62)
+  mainFrame.sidebar:SetSize(SIDEBAR_WIDTH, 452)
+  mainFrame.sidebar:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 18, -70)
+  DecoratePanel(mainFrame.sidebar, UI_THEME.panel, UI_THEME.goldSoft, 0.68, 0.34)
 
-  mainFrame.progressTitle = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  mainFrame.progressTitle:SetPoint("TOP", mainFrame.sidebar, "TOP", 0, -12)
-  mainFrame.progressTitle:SetWidth(SIDEBAR_WIDTH - 24)
-  mainFrame.progressTitle:SetJustifyH("CENTER")
-  mainFrame.progressTitle:SetText(L("progressTitle"))
-  StyleFont(mainFrame.progressTitle, 11, 1, 0.84, 0.24, "OUTLINE")
+  mainFrame.modeTitle = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  mainFrame.modeTitle:SetPoint("TOPLEFT", mainFrame.sidebar, "TOPLEFT", 12, -11)
+  mainFrame.modeTitle:SetText(L("filterViews"))
+  StyleFont(mainFrame.modeTitle, 10, 1, 0.84, 0.24, "OUTLINE")
 
-  mainFrame.progressPercent = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-  mainFrame.progressPercent:SetPoint("TOP", mainFrame.progressTitle, "BOTTOM", 0, -20)
-  mainFrame.progressPercent:SetWidth(SIDEBAR_WIDTH - 24)
-  mainFrame.progressPercent:SetJustifyH("CENTER")
-  mainFrame.progressPercent:SetText("0%")
-  StyleFont(mainFrame.progressPercent, 32, 1, 1, 1, "OUTLINE")
+  mainFrame.tabs = {}
 
-  mainFrame.progressBar = CreateFrame("StatusBar", nil, mainFrame.sidebar)
-  mainFrame.progressBar:SetSize(SIDEBAR_WIDTH - 32, 14)
-  mainFrame.progressBar:SetPoint("TOP", mainFrame.progressPercent, "BOTTOM", 0, -18)
-  mainFrame.progressBar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-  mainFrame.progressBar:SetStatusBarColor(0.1, 0.9, 0.72, 0.95)
-  mainFrame.progressBar:SetMinMaxValues(0, 100)
-  mainFrame.progressBar:SetValue(0)
-  DecoratePanel(mainFrame.progressBar, { 0.006, 0.012, 0.026 }, UI_THEME.cyan, 0.75, 0.48)
+  for index, mode in ipairs({ "today", "weekly" }) do
+    local button = CreateFrame("Button", nil, mainFrame.sidebar, "UIPanelButtonTemplate")
+    button:SetSize(56, 28)
+    button:SetPoint("TOPLEFT", mainFrame.sidebar, "TOPLEFT", 12 + ((index - 1) * 62), -28)
+    button:SetText(modeLabels[mode])
+    DecorateButton(button, MODE_COLORS[mode], 0.2)
+    button:SetScript("OnClick", function()
+      ToggleModeButton(mode)
+    end)
+    mainFrame.tabs[mode] = button
+  end
 
-  mainFrame.progressDetails = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  mainFrame.progressDetails:SetPoint("TOP", mainFrame.progressBar, "BOTTOM", 0, -10)
-  mainFrame.progressDetails:SetWidth(SIDEBAR_WIDTH - 24)
-  mainFrame.progressDetails:SetJustifyH("CENTER")
-  mainFrame.progressDetails:SetText("0 / 0")
-  StyleFont(mainFrame.progressDetails, 11, 0.82, 0.88, 1, "OUTLINE")
-
-  mainFrame.expansionProgressDetails = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  mainFrame.expansionProgressDetails:SetPoint("TOP", mainFrame.progressDetails, "BOTTOM", 0, -3)
-  mainFrame.expansionProgressDetails:SetWidth(SIDEBAR_WIDTH - 24)
-  mainFrame.expansionProgressDetails:SetJustifyH("CENTER")
-  mainFrame.expansionProgressDetails:SetText(L("expansionProgressTooltipHint"))
-  SafeCall(mainFrame.expansionProgressDetails.SetWordWrap, mainFrame.expansionProgressDetails, false)
-  StyleFont(mainFrame.expansionProgressDetails, 10, 0.98, 0.84, 0.34, "OUTLINE")
-
-  mainFrame.progressTooltipArea = CreateFrame("Frame", nil, mainFrame.sidebar)
-  mainFrame.progressTooltipArea:SetPoint("TOPLEFT", mainFrame.progressTitle, "TOPLEFT", -6, 6)
-  mainFrame.progressTooltipArea:SetPoint("BOTTOMRIGHT", mainFrame.expansionProgressDetails, "BOTTOMRIGHT", 6, -3)
-  mainFrame.progressTooltipArea:EnableMouse(true)
-  mainFrame.progressTooltipArea:SetScript("OnEnter", function(self)
-    ShowExpansionProgressTooltip(self)
+  mainFrame.pinnedButton = CreateFrame("Button", nil, mainFrame.sidebar, "UIPanelButtonTemplate")
+  mainFrame.pinnedButton:SetSize(SIDEBAR_WIDTH - 24, 26)
+  mainFrame.pinnedButton:SetPoint("TOPLEFT", mainFrame.sidebar, "TOPLEFT", 12, -62)
+  mainFrame.pinnedButton:SetText(L("pinnedCount", 0))
+  DecorateButton(mainFrame.pinnedButton, MODE_COLORS.pinned, 0.2)
+  mainFrame.pinnedButton:SetScript("OnClick", function()
+    ToggleModeButton("pinned")
   end)
-  mainFrame.progressTooltipArea:SetScript("OnLeave", function()
-    GameTooltip:Hide()
-  end)
+  mainFrame.tabs.pinned = mainFrame.pinnedButton
 
   mainFrame.missingEasyButton = CreateFrame("Button", nil, mainFrame.sidebar, "UIPanelButtonTemplate")
-  mainFrame.missingEasyButton:SetSize(SIDEBAR_WIDTH - 28, 34)
-  mainFrame.missingEasyButton:SetPoint("TOP", mainFrame.expansionProgressDetails, "BOTTOM", 0, -12)
+  mainFrame.missingEasyButton:SetSize(SIDEBAR_WIDTH - 24, 28)
+  mainFrame.missingEasyButton:SetPoint("TOPLEFT", mainFrame.sidebar, "TOPLEFT", 12, -410)
   mainFrame.missingEasyButton:SetText(L("missingEasyButton"))
   DecorateButton(mainFrame.missingEasyButton, UI_THEME.green, 0.22)
   mainFrame.missingEasyButton:SetScript("OnClick", function()
@@ -7559,19 +8898,19 @@ function CreateWindow()
   end)
 
   mainFrame.priorityLabel = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  mainFrame.priorityLabel:SetPoint("TOPLEFT", mainFrame.sidebar, "TOPLEFT", 14, -192)
+  mainFrame.priorityLabel:SetPoint("TOPLEFT", mainFrame.missingEasyButton, "BOTTOMLEFT", 0, -16)
   mainFrame.priorityLabel:SetText(L("priorityLabel"))
   StyleFont(mainFrame.priorityLabel, 10, 1, 0.82, 0.26, "OUTLINE")
 
   mainFrame.priorityMode = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-  mainFrame.priorityMode:SetPoint("TOPLEFT", mainFrame.priorityLabel, "BOTTOMLEFT", 0, -8)
+  mainFrame.priorityMode:SetPoint("TOPLEFT", mainFrame.priorityLabel, "BOTTOMLEFT", 0, -5)
   mainFrame.priorityMode:SetWidth(SIDEBAR_WIDTH - 28)
   mainFrame.priorityMode:SetJustifyH("LEFT")
   mainFrame.priorityMode:SetText(modeLabels[currentMode] or L("modeToday"))
-  StyleFont(mainFrame.priorityMode, 16, 1, 1, 1, "OUTLINE")
+  StyleFont(mainFrame.priorityMode, 12, 0.9, 0.94, 1, "OUTLINE")
 
   mainFrame.priorityPlanTitle = mainFrame.sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  mainFrame.priorityPlanTitle:SetPoint("TOPLEFT", mainFrame.priorityMode, "BOTTOMLEFT", 0, -14)
+  mainFrame.priorityPlanTitle:SetPoint("TOPLEFT", mainFrame.priorityMode, "BOTTOMLEFT", 0, -10)
   mainFrame.priorityPlanTitle:SetWidth(SIDEBAR_WIDTH - 28)
   mainFrame.priorityPlanTitle:SetJustifyH("LEFT")
   mainFrame.priorityPlanTitle:SetText(L("priorityTodayTitle"))
@@ -7624,117 +8963,71 @@ function CreateWindow()
   mainFrame.priorityPotential:SetJustifyH("LEFT")
   mainFrame.priorityPotential:SetText(L("priorityNoItems"))
   StyleFont(mainFrame.priorityPotential, 10, 0.26, 0.95, 0.56, "OUTLINE")
+  mainFrame.priorityPanelHidden = true
+  mainFrame.priorityLabel:Hide()
+  mainFrame.priorityMode:Hide()
+  mainFrame.priorityPlanTitle:Hide()
+  mainFrame.priorityPotential:Hide()
+
+  for _, priorityRow in ipairs(mainFrame.priorityRows) do
+    priorityRow:Hide()
+  end
 
   mainFrame.statCards = {
-    total = CreateStatCard(mainFrame, "statTotalMounts", CONTENT_LEFT, UI_THEME.blue),
-    collected = CreateStatCard(mainFrame, "statCollected", CONTENT_LEFT + 188, UI_THEME.green),
-    missing = CreateStatCard(mainFrame, "statMissing", CONTENT_LEFT + 376, UI_THEME.red),
-    attempted = CreateStatCard(mainFrame, "statAttempted", CONTENT_LEFT + 564, UI_THEME.cyan),
-    favorites = CreateStatCard(mainFrame, "statFavorites", CONTENT_LEFT + 752, UI_THEME.gold)
+    results = CreateStatCard(mainFrame, "statResults", CONTENT_LEFT, UI_THEME.blue),
+    pending = CreateStatCard(mainFrame, "statPending", CONTENT_LEFT + 200, UI_THEME.gold),
+    collection = CreateStatCard(mainFrame, "statCollection", CONTENT_LEFT + 400, UI_THEME.cyan)
   }
 
+  mainFrame.progressPercent = mainFrame.statCards.collection.value
+  mainFrame.progressDetails = mainFrame.statCards.collection.sub
+  mainFrame.progressBar = CreateFrame("StatusBar", nil, mainFrame.statCards.collection)
+  mainFrame.progressBar:SetSize(174, 3)
+  mainFrame.progressBar:SetPoint("BOTTOMLEFT", mainFrame.statCards.collection, "BOTTOMLEFT", 10, 1)
+  mainFrame.progressBar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+  mainFrame.progressBar:SetStatusBarColor(0.1, 0.9, 0.72, 0.95)
+  mainFrame.progressBar:SetMinMaxValues(0, 100)
+  mainFrame.progressBar:SetValue(0)
+
+  mainFrame.progressTooltipArea = CreateFrame("Frame", nil, mainFrame.statCards.collection)
+  mainFrame.progressTooltipArea:SetAllPoints(mainFrame.statCards.collection)
+  mainFrame.progressTooltipArea:EnableMouse(true)
+  mainFrame.progressTooltipArea:SetScript("OnEnter", function(self)
+    ShowExpansionProgressTooltip(self)
+  end)
+  mainFrame.progressTooltipArea:SetScript("OnLeave", function()
+    GameTooltip:Hide()
+  end)
+
   mainFrame.summaryText = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  mainFrame.summaryText:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", CONTENT_LEFT, -138)
-  mainFrame.summaryText:SetWidth(FRAME_WIDTH - CONTENT_LEFT - 30)
+  mainFrame.summaryText:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", CONTENT_LEFT, -120)
+  mainFrame.summaryText:SetWidth(ROW_WIDTH)
   mainFrame.summaryText:SetJustifyH("LEFT")
-  StyleFont(mainFrame.summaryText, 10, 0.83, 0.88, 1, "OUTLINE")
+  StyleFont(mainFrame.summaryText, 9, 0.78, 0.84, 0.94, "OUTLINE")
 
-  mainFrame.filterBar = CreateFrame("Frame", nil, mainFrame)
-  mainFrame.filterBar:SetSize(FRAME_WIDTH - CONTENT_LEFT - 18, 34)
-  mainFrame.filterBar:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", CONTENT_LEFT - 6, -151)
-  DecoratePanel(mainFrame.filterBar, { 0.018, 0.018, 0.032 }, UI_THEME.goldSoft, 0.78, 0.42)
+  mainFrame.filterBar = CreateFrame("Frame", nil, mainFrame.sidebar)
+  mainFrame.filterBar:SetSize(SIDEBAR_WIDTH - 24, 286)
+  mainFrame.filterBar:SetPoint("TOPLEFT", mainFrame.sidebar, "TOPLEFT", 12, -96)
+  DecoratePanel(mainFrame.filterBar, { 0.014, 0.016, 0.03 }, UI_THEME.goldSoft, 0.52, 0.24)
 
-  mainFrame.expansionPrevButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.expansionPrevButton:SetSize(28, 24)
-  mainFrame.expansionPrevButton:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", CONTENT_LEFT, -156)
-  mainFrame.expansionPrevButton:SetText("<")
-  DecorateButton(mainFrame.expansionPrevButton, UI_THEME.gold, 0.18)
-  mainFrame.expansionPrevButton:SetScript("OnClick", function()
-    currentExpansionFilter = PreviousOption(expansionFilterOptions, currentExpansionFilter)
-    ShowAllMountsForExpansion()
-  end)
+  mainFrame.filterTitle = mainFrame.filterBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  mainFrame.filterTitle:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -6)
+  mainFrame.filterTitle:SetWidth(SIDEBAR_WIDTH - 24)
+  mainFrame.filterTitle:SetJustifyH("LEFT")
+  mainFrame.filterTitle:SetText(L("filterDiscover"))
+  StyleFont(mainFrame.filterTitle, 10, 1, 0.82, 0.24, "OUTLINE")
 
-  mainFrame.expansionButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.expansionButton:SetSize(172, 24)
-  mainFrame.expansionButton:SetPoint("LEFT", mainFrame.expansionPrevButton, "RIGHT", 4, 0)
-  DecorateButton(mainFrame.expansionButton, UI_THEME.gold, 0.18)
-  mainFrame.expansionButton:SetScript("OnClick", function()
-    currentExpansionFilter = CycleOption(expansionFilterOptions, currentExpansionFilter)
-    ShowAllMountsForExpansion()
-  end)
-
-  mainFrame.expansionNextButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.expansionNextButton:SetSize(28, 24)
-  mainFrame.expansionNextButton:SetPoint("LEFT", mainFrame.expansionButton, "RIGHT", 4, 0)
-  mainFrame.expansionNextButton:SetText(">")
-  DecorateButton(mainFrame.expansionNextButton, UI_THEME.gold, 0.18)
-  mainFrame.expansionNextButton:SetScript("OnClick", function()
-    currentExpansionFilter = CycleOption(expansionFilterOptions, currentExpansionFilter)
-    ShowAllMountsForExpansion()
-  end)
-
-  mainFrame.filterToggleButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.filterToggleButton:SetSize(86, 24)
-  mainFrame.filterToggleButton:SetPoint("LEFT", mainFrame.expansionNextButton, "RIGHT", 8, 0)
-  DecorateButton(mainFrame.filterToggleButton, UI_THEME.blue, 0.18)
-  mainFrame.filterToggleButton:SetScript("OnClick", function()
-    filtersAdvancedOpen = not filtersAdvancedOpen
-    UpdateFilterButtons()
-  end)
-
-  mainFrame.sourceButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.sourceButton:SetSize(118, 24)
-  mainFrame.sourceButton:SetPoint("LEFT", mainFrame.filterToggleButton, "RIGHT", 8, 0)
-  DecorateButton(mainFrame.sourceButton, UI_THEME.green, 0.18)
-  mainFrame.sourceButton:SetScript("OnClick", function()
-    local options = currentMode == "sources" and sourceModeOptions or sourceFilterOptions
-
-    currentSourceFilter = CycleOption(options, currentSourceFilter)
-    ShowAllMountsForSource()
-  end)
-
-  mainFrame.collectionButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.collectionButton:SetSize(118, 24)
-  mainFrame.collectionButton:SetPoint("LEFT", mainFrame.sourceButton, "RIGHT", 8, 0)
-  DecorateButton(mainFrame.collectionButton, UI_THEME.purple, 0.18)
-  mainFrame.collectionButton:SetScript("OnClick", function()
-    currentCollectionFilter = CycleOption(collectionFilterOptions, currentCollectionFilter)
-
-    ResetListScroll()
-    RefreshWindow()
-  end)
-
-  mainFrame.clearFilterButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.clearFilterButton:SetSize(64, 24)
-  mainFrame.clearFilterButton:SetPoint("LEFT", mainFrame.collectionButton, "RIGHT", 8, 0)
-  mainFrame.clearFilterButton:SetText(L("buttonClearFilters"))
-  DecorateButton(mainFrame.clearFilterButton, UI_THEME.orange, 0.18)
-  mainFrame.clearFilterButton:SetScript("OnClick", function()
-    currentExpansionFilter = "all"
-    currentSourceFilter = "all"
-    currentCollectionFilter = "missing"
-    currentSearchText = ""
-    ApplyModeDefaults(currentMode)
-
-    if mainFrame.searchBox then
-      mainFrame.searchBox:SetText("")
-      mainFrame.searchBox:ClearFocus()
-    end
-
-    ShowAllMountsForSource()
-  end)
-
-  mainFrame.searchLabel = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  mainFrame.searchLabel:SetPoint("LEFT", mainFrame.filterToggleButton, "RIGHT", 10, 0)
+  mainFrame.searchLabel = mainFrame.filterBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  mainFrame.searchLabel:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -24)
   mainFrame.searchLabel:SetText(L("searchLabel"))
-  StyleFont(mainFrame.searchLabel, 10, 0.9, 0.94, 1, "OUTLINE")
+  StyleFont(mainFrame.searchLabel, 9, 0.9, 0.94, 1, "OUTLINE")
 
-  mainFrame.searchBox = CreateFrame("EditBox", nil, mainFrame, "InputBoxTemplate")
-  mainFrame.searchBox:SetSize(205, 24)
-  mainFrame.searchBox:SetPoint("LEFT", mainFrame.searchLabel, "RIGHT", 8, 0)
+  mainFrame.searchBox = CreateFrame("EditBox", nil, mainFrame.filterBar, "InputBoxTemplate")
+  mainFrame.searchBox:SetSize(90, 22)
+  mainFrame.searchBox:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -39)
   mainFrame.searchBox:SetAutoFocus(false)
   mainFrame.searchBox:SetText(currentSearchText)
-  StyleFont(mainFrame.searchBox, 11, 1, 1, 1)
+  StyleFont(mainFrame.searchBox, 10, 1, 1, 1)
   mainFrame.searchBox:SetScript("OnEscapePressed", function(self)
     self:ClearFocus()
   end)
@@ -7751,8 +9044,8 @@ function CreateWindow()
     QueueRefreshWindow(MountAtlasRuntime.SEARCH_REFRESH_DELAY)
   end)
 
-  mainFrame.clearSearchButton = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-  mainFrame.clearSearchButton:SetSize(28, 24)
+  mainFrame.clearSearchButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.clearSearchButton:SetSize(22, 22)
   mainFrame.clearSearchButton:SetPoint("LEFT", mainFrame.searchBox, "RIGHT", 6, 0)
   mainFrame.clearSearchButton:SetText("X")
   DecorateButton(mainFrame.clearSearchButton, UI_THEME.red, 0.18)
@@ -7767,6 +9060,111 @@ function CreateWindow()
     ResetListScroll()
     RefreshWindow()
   end)
+
+  mainFrame.expansionFilterLabel = mainFrame.filterBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  mainFrame.expansionFilterLabel:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -70)
+  mainFrame.expansionFilterLabel:SetText(L("filterExpansion"))
+  StyleFont(mainFrame.expansionFilterLabel, 9, 0.78, 0.84, 0.94, "OUTLINE")
+
+  mainFrame.expansionPrevButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.expansionPrevButton:SetSize(18, 22)
+  mainFrame.expansionPrevButton:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -85)
+  mainFrame.expansionPrevButton:SetText("<")
+  DecorateButton(mainFrame.expansionPrevButton, UI_THEME.gold, 0.18)
+  mainFrame.expansionPrevButton:SetScript("OnClick", function()
+    currentExpansionFilter = PreviousOption(expansionFilterOptions, currentExpansionFilter)
+    ShowAllMountsForExpansion()
+  end)
+
+  mainFrame.expansionButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.expansionButton:SetSize(78, 22)
+  mainFrame.expansionButton:SetPoint("LEFT", mainFrame.expansionPrevButton, "RIGHT", 2, 0)
+  DecorateButton(mainFrame.expansionButton, UI_THEME.gold, 0.18)
+  mainFrame.expansionButton:SetScript("OnClick", function()
+    currentExpansionFilter = CycleOption(expansionFilterOptions, currentExpansionFilter)
+    ShowAllMountsForExpansion()
+  end)
+
+  mainFrame.expansionNextButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.expansionNextButton:SetSize(18, 22)
+  mainFrame.expansionNextButton:SetPoint("LEFT", mainFrame.expansionButton, "RIGHT", 2, 0)
+  mainFrame.expansionNextButton:SetText(">")
+  DecorateButton(mainFrame.expansionNextButton, UI_THEME.gold, 0.18)
+  mainFrame.expansionNextButton:SetScript("OnClick", function()
+    currentExpansionFilter = CycleOption(expansionFilterOptions, currentExpansionFilter)
+    ShowAllMountsForExpansion()
+  end)
+
+  mainFrame.sourceGroupLabel = mainFrame.filterBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  mainFrame.sourceGroupLabel:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -116)
+  mainFrame.sourceGroupLabel:SetText(L("filterSource"))
+  StyleFont(mainFrame.sourceGroupLabel, 9, 0.78, 0.84, 0.94, "OUTLINE")
+
+  mainFrame.sourceGroupButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.sourceGroupButton:SetSize(SIDEBAR_WIDTH - 24, 22)
+  mainFrame.sourceGroupButton:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -131)
+  DecorateButton(mainFrame.sourceGroupButton, UI_THEME.blue, 0.18)
+  mainFrame.sourceGroupButton:SetScript("OnClick", function()
+    currentSourceGroupFilter = CycleOption(GetAvailableSourceGroupOptions(), currentSourceGroupFilter)
+    currentSourceFilter = "all"
+    ShowAllMountsForSource()
+  end)
+
+  mainFrame.sourceLabel = mainFrame.filterBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  mainFrame.sourceLabel:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -162)
+  mainFrame.sourceLabel:SetText(L("filterSubSource"))
+  StyleFont(mainFrame.sourceLabel, 9, 0.78, 0.84, 0.94, "OUTLINE")
+
+  mainFrame.sourceButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.sourceButton:SetSize(SIDEBAR_WIDTH - 24, 22)
+  mainFrame.sourceButton:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -177)
+  DecorateButton(mainFrame.sourceButton, UI_THEME.green, 0.18)
+  mainFrame.sourceButton:SetScript("OnClick", function()
+    local options = GetAvailableSubSourceOptions()
+
+    currentSourceFilter = CycleOption(options, currentSourceFilter)
+    ShowAllMountsForSource()
+  end)
+
+  mainFrame.collectionLabel = mainFrame.filterBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  mainFrame.collectionLabel:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -208)
+  mainFrame.collectionLabel:SetText(L("filterCollection"))
+  StyleFont(mainFrame.collectionLabel, 9, 0.78, 0.84, 0.94, "OUTLINE")
+
+  mainFrame.collectionButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.collectionButton:SetSize(SIDEBAR_WIDTH - 24, 22)
+  mainFrame.collectionButton:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -223)
+  DecorateButton(mainFrame.collectionButton, UI_THEME.purple, 0.18)
+  mainFrame.collectionButton:SetScript("OnClick", function()
+    currentCollectionFilter = CycleOption(collectionFilterOptions, currentCollectionFilter)
+
+    ResetListScroll()
+    RefreshWindow()
+  end)
+
+  mainFrame.clearFilterButton = CreateFrame("Button", nil, mainFrame.filterBar, "UIPanelButtonTemplate")
+  mainFrame.clearFilterButton:SetSize(SIDEBAR_WIDTH - 24, 22)
+  mainFrame.clearFilterButton:SetPoint("TOPLEFT", mainFrame.filterBar, "TOPLEFT", 0, -254)
+  mainFrame.clearFilterButton:SetText(L("buttonClearFilters"))
+  DecorateButton(mainFrame.clearFilterButton, UI_THEME.orange, 0.18)
+  mainFrame.clearFilterButton:SetScript("OnClick", function()
+    currentExpansionFilter = "all"
+    currentSourceGroupFilter = "all"
+    currentSourceFilter = "all"
+    currentCollectionFilter = currentMode == "pinned" and "all" or "missing"
+    currentSearchText = ""
+    ApplyModeDefaults(currentMode)
+
+    if mainFrame.searchBox then
+      mainFrame.searchBox:SetText("")
+      mainFrame.searchBox:ClearFocus()
+    end
+
+    ShowAllMountsForSource()
+  end)
+
+  mainFrame.missingEasyButton:ClearAllPoints()
+  mainFrame.missingEasyButton:SetPoint("TOPLEFT", mainFrame.filterBar, "BOTTOMLEFT", 0, -10)
 
   mainFrame.emptyText = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   mainFrame.emptyText:SetPoint("CENTER", mainFrame, "CENTER", -84, -86)
@@ -7808,14 +9206,14 @@ function CreateWindow()
   StyleFont(mainFrame.previewTitle, 11, 1, 0.82, 0.24, "OUTLINE")
 
   mainFrame.previewName = mainFrame.previewPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-  mainFrame.previewName:SetPoint("TOPLEFT", mainFrame.previewPanel, "TOPLEFT", 12, -34)
+  mainFrame.previewName:SetPoint("TOPLEFT", mainFrame.previewPanel, "TOPLEFT", 12, -31)
   mainFrame.previewName:SetWidth(PREVIEW_WIDTH - 24)
   mainFrame.previewName:SetJustifyH("LEFT")
-  StyleFont(mainFrame.previewName, 16, 1, 1, 1, "OUTLINE")
+  StyleFont(mainFrame.previewName, 14, 1, 1, 1, "OUTLINE")
 
   mainFrame.previewModelFrame = CreateFrame("Frame", nil, mainFrame.previewPanel)
-  mainFrame.previewModelFrame:SetSize(PREVIEW_WIDTH - 24, 118)
-  mainFrame.previewModelFrame:SetPoint("TOPLEFT", mainFrame.previewPanel, "TOPLEFT", 12, -62)
+  mainFrame.previewModelFrame:SetSize(PREVIEW_WIDTH - 24, 100)
+  mainFrame.previewModelFrame:SetPoint("TOPLEFT", mainFrame.previewPanel, "TOPLEFT", 12, -56)
   DecoratePanel(mainFrame.previewModelFrame, { 0.004, 0.008, 0.02 }, UI_THEME.blue, 0.94, 0.44)
 
   local modelReady, previewModel = pcall(CreateFrame, "PlayerModel", nil, mainFrame.previewModelFrame)
@@ -7825,7 +9223,14 @@ function CreateWindow()
     mainFrame.previewModel:SetAllPoints(mainFrame.previewModelFrame)
     mainFrame.previewModel:SetScript("OnUpdate", function(self, elapsed)
       if self.displayActive then
-        self.previewFacing = (self.previewFacing or 0) + (elapsed * 0.22)
+        self.previewUpdateElapsed = (self.previewUpdateElapsed or 0) + (elapsed or 0)
+
+        if self.previewUpdateElapsed < 0.05 then
+          return
+        end
+
+        self.previewFacing = (self.previewFacing or 0) + (self.previewUpdateElapsed * 0.22)
+        self.previewUpdateElapsed = 0
         SafeCall(self.SetFacing, self, self.previewFacing)
       end
     end)
@@ -7843,14 +9248,14 @@ function CreateWindow()
 
   mainFrame.previewDetailsScrollFrame = CreateFrame("ScrollFrame", nil, mainFrame.previewPanel)
   mainFrame.previewDetailsScrollFrame:SetPoint("TOPLEFT", mainFrame.previewInfoTitle, "BOTTOMLEFT", 0, -5)
-  mainFrame.previewDetailsScrollFrame:SetSize(PREVIEW_WIDTH - 24, 146)
+  mainFrame.previewDetailsScrollFrame:SetSize(PREVIEW_WIDTH - 24, PREVIEW_DETAILS_HEIGHT)
   mainFrame.previewDetailsScrollFrame:EnableMouseWheel(true)
   mainFrame.previewDetailsScrollFrame:SetScript("OnMouseWheel", function(_, delta)
     ScrollPreviewDetails(delta)
   end)
 
   mainFrame.previewDetailsContent = CreateFrame("Frame", nil, mainFrame.previewDetailsScrollFrame)
-  mainFrame.previewDetailsContent:SetSize(PREVIEW_WIDTH - 24, 146)
+  mainFrame.previewDetailsContent:SetSize(PREVIEW_WIDTH - 24, PREVIEW_DETAILS_HEIGHT)
   mainFrame.previewDetailsScrollFrame:SetScrollChild(mainFrame.previewDetailsContent)
 
   mainFrame.previewDetails = mainFrame.previewDetailsContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -7928,40 +9333,41 @@ function CreateWindow()
     row.accent:SetColorTexture(0.9, 0.14, 0.08, 0.72)
 
     row.iconBorder = row:CreateTexture(nil, "BORDER")
-    row.iconBorder:SetSize(48, 48)
-    row.iconBorder:SetPoint("LEFT", row, "LEFT", 12, 0)
+    row.iconBorder:SetSize(36, 36)
+    row.iconBorder:SetPoint("LEFT", row, "LEFT", 10, 0)
     row.iconBorder:SetColorTexture(0.95, 0.56, 0.12, 0.42)
 
     row.icon = row:CreateTexture(nil, "ARTWORK")
-    row.icon:SetSize(44, 44)
+    row.icon:SetSize(32, 32)
     row.icon:SetPoint("CENTER", row.iconBorder, "CENTER", 0, 0)
     row.icon:SetTexture(DEFAULT_MOUNT_ICON)
     row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
     row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    row.name:SetPoint("TOPLEFT", row, "TOPLEFT", 70, -6)
-    row.name:SetWidth(470)
+    row.name:SetPoint("TOPLEFT", row, "TOPLEFT", 56, -6)
+    row.name:SetWidth(420)
     row.name:SetJustifyH("LEFT")
     SafeCall(row.name.SetWordWrap, row.name, false)
-    StyleFont(row.name, 12, 1, 0.83, 0.14, "OUTLINE")
+    StyleFont(row.name, 12, 1, 0.86, 0.2, "OUTLINE")
 
     row.details = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.details:SetPoint("TOPLEFT", row, "TOPLEFT", 70, -24)
-    row.details:SetWidth(470)
+    row.details:SetPoint("TOPLEFT", row, "TOPLEFT", 56, -25)
+    row.details:SetWidth(420)
     row.details:SetJustifyH("LEFT")
     SafeCall(row.details.SetWordWrap, row.details, false)
-    StyleFont(row.details, 10, 0.94, 0.94, 0.9, "OUTLINE")
+    StyleFont(row.details, 10, 0.76, 0.82, 0.92, "OUTLINE")
 
     row.note = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.note:SetPoint("TOPLEFT", row, "TOPLEFT", 70, -41)
-    row.note:SetWidth(470)
+    row.note:SetPoint("TOPLEFT", row, "TOPLEFT", 56, -37)
+    row.note:SetWidth(420)
     row.note:SetJustifyH("LEFT")
     SafeCall(row.note.SetWordWrap, row.note, false)
     StyleFont(row.note, 10, 0.68, 0.74, 0.86)
+    row.note:Hide()
 
     row.doneButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.doneButton:SetSize(24, 20)
-    row.doneButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -58, 8)
+    row.doneButton:SetSize(20, 18)
+    row.doneButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -52, 5)
     DecorateButton(row.doneButton, UI_THEME.neutral, 0.12)
     row.doneButton:SetAlpha(0.72)
     row.doneButton:EnableMouseWheel(true)
@@ -7970,8 +9376,8 @@ function CreateWindow()
     end)
 
     row.clearButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.clearButton:SetSize(24, 20)
-    row.clearButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -33, 8)
+    row.clearButton:SetSize(20, 18)
+    row.clearButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -30, 5)
     DecorateButton(row.clearButton, UI_THEME.neutral, 0.12)
     row.clearButton:SetAlpha(0.72)
     row.clearButton:EnableMouseWheel(true)
@@ -7980,8 +9386,8 @@ function CreateWindow()
     end)
 
     row.favButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.favButton:SetSize(24, 20)
-    row.favButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 8)
+    row.favButton:SetSize(20, 18)
+    row.favButton:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 5)
     DecorateButton(row.favButton, UI_THEME.neutral, 0.12)
     row.favButton:SetAlpha(0.72)
     row.favButton:EnableMouseWheel(true)
@@ -7990,8 +9396,8 @@ function CreateWindow()
     end)
 
     row.status = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    row.status:SetPoint("TOPRIGHT", row, "TOPRIGHT", -10, -8)
-    row.status:SetWidth(116)
+    row.status:SetPoint("TOPRIGHT", row, "TOPRIGHT", -9, -6)
+    row.status:SetWidth(96)
     row.status:SetJustifyH("RIGHT")
     StyleFont(row.status, 10, 1, 0.82, 0.18, "OUTLINE")
 
@@ -8005,7 +9411,7 @@ function CreateWindow()
   DecorateButton(mainFrame.prevButton, UI_THEME.gold, 0.18)
   mainFrame.prevButton:SetScript("OnClick", function()
     currentScrollOffset = ClampScrollOffset(currentScrollOffset - ROW_COUNT, mainFrame.currentItemCount or 0)
-    RefreshWindow()
+    RefreshWindow(true)
   end)
   mainFrame.prevButton:Hide()
 
@@ -8016,7 +9422,7 @@ function CreateWindow()
   DecorateButton(mainFrame.nextButton, UI_THEME.gold, 0.18)
   mainFrame.nextButton:SetScript("OnClick", function()
     currentScrollOffset = ClampScrollOffset(currentScrollOffset + ROW_COUNT, mainFrame.currentItemCount or 0)
-    RefreshWindow()
+    RefreshWindow(true)
   end)
   mainFrame.nextButton:Hide()
 
@@ -8070,8 +9476,15 @@ function PopulateMountRow(row, mount, listIndex)
   end
 
   row.name:SetText(namePrefix .. mountName)
-  row.details:SetText(source .. " | " .. zone .. " | " .. reset)
+  row.name:SetTextColor(1, favorite and 0.78 or 0.86, favorite and 0.24 or 0.2)
+  row.favoriteActive = favorite
+  if reset and reset ~= "" then
+    row.details:SetText(source .. " | " .. zone .. " | " .. reset)
+  else
+    row.details:SetText(source .. " | " .. zone)
+  end
   row.note:SetText(ShortenText(note, 62))
+  row.note:Hide()
 
   if row.icon then
     row.icon:SetTexture(SafeCall(GetMountIcon, mount) or DEFAULT_MOUNT_ICON)
@@ -8103,21 +9516,25 @@ function PopulateMountRow(row, mount, listIndex)
     row.status:SetText("|cffffd200" .. L("statusPending") .. "|r")
   end
   row.doneButton:Show()
-  row.clearButton:Show()
+  if attempted then
+    row.clearButton:Show()
+  else
+    row.clearButton:Hide()
+  end
   row.favButton:Show()
   ConfigureIconButton(row.doneButton, ACTION_ICON_DONE, L("buttonDone"), L("buttonActionDoneHint"), function()
     MarkAttempt(mount)
     Print(L("mountAttempted", GetMountDisplayName(mount)))
-    RefreshWindow()
+    RefreshWindow(true)
   end)
   ConfigureIconButton(row.clearButton, ACTION_ICON_CLEAR, L("buttonClear"), L("buttonActionClearHint"), function()
     ClearAttempt(mount)
     Print(L("mountAttemptCleared", GetMountDisplayName(mount)))
-    RefreshWindow()
+    RefreshWindow(true)
   end)
-  ConfigureIconButton(row.favButton, ACTION_ICON_FAVORITE, favorite and L("buttonUnfavorite") or L("buttonFavorite"), L("buttonActionFavoriteHint"), function()
+  ConfigureIconButton(row.favButton, ACTION_ICON_FAVORITE, favorite and L("buttonUnpin") or L("buttonPin"), L("buttonActionPinHint"), function()
     ToggleFavoriteMount(mount)
-    RefreshWindow()
+    RefreshWindow(true)
   end)
   DecorateButton(row.doneButton, attempted and UI_THEME.blue or UI_THEME.neutral, attempted and 0.16 or 0.1)
   DecorateButton(row.clearButton, UI_THEME.neutral, 0.1)
@@ -8182,13 +9599,16 @@ function PopulateAchievementRow(row, item)
   end
 
   row.name:SetText(item.name .. " (" .. item.percent .. "%)")
+  row.name:SetTextColor(1, favorite and 0.78 or 0.86, favorite and 0.24 or 0.2)
+  row.favoriteActive = favorite
   if item.completed then
-    row.details:SetText((item.expansion or "General") .. " | " .. L("statusCompleted") .. " | " .. item.done .. "/" .. item.total)
+    row.details:SetText((item.expansion or "General") .. " | " .. item.done .. "/" .. item.total)
   else
     row.details:SetText((item.expansion or "General") .. " | " .. L("missing") .. " " .. missing .. " | " .. item.done .. "/" .. item.total)
   end
 
   row.note:SetText(ShortenText(note, 62))
+  row.note:Hide()
   if row.icon then
     row.icon:SetTexture(previewMount and GetMountIcon(previewMount) or DEFAULT_ACHIEVEMENT_ICON)
   end
@@ -8212,9 +9632,9 @@ function PopulateAchievementRow(row, item)
   ConfigureIconButton(row.doneButton, ACTION_ICON_VIEW, L("buttonView"), L("buttonActionViewHint"), function()
     OpenAchievement(item.achievementID)
   end)
-  ConfigureIconButton(row.favButton, ACTION_ICON_FAVORITE, favorite and L("buttonUnfavorite") or L("buttonFavorite"), L("buttonActionFavoriteHint"), function()
+  ConfigureIconButton(row.favButton, ACTION_ICON_FAVORITE, favorite and L("buttonUnpin") or L("buttonPin"), L("buttonActionPinHint"), function()
     ToggleFavoriteAchievement(item)
-    RefreshWindow()
+    RefreshWindow(true)
   end)
   DecorateButton(row.doneButton, UI_THEME.neutral, 0.12)
   DecorateButton(row.favButton, favorite and UI_THEME.gold or UI_THEME.neutral, favorite and 0.2 or 0.1)
@@ -8247,13 +9667,15 @@ function PopulateAchievementRow(row, item)
   row.favButton:Enable()
 end
 
-RefreshWindow = function()
+RefreshWindow = function(preservePreview)
   if not mainFrame then
     return
   end
 
+  NormalizeAvailableSourceFilters()
   local items, emptyText = BuildItems()
   local itemCount = #items
+  local shouldPreservePreview = preservePreview == true and selectedPreviewMount ~= nil and itemCount > 0
 
   mainFrame.currentItemCount = itemCount
   currentScrollOffset = ClampScrollOffset(currentScrollOffset, itemCount)
@@ -8261,25 +9683,20 @@ RefreshWindow = function()
 
   local attempted = CountAttempted(items)
   local pending = #items - attempted
+
+  if currentMode == "pinned" then
+    pending = 0
+
+    for _, item in ipairs(items) do
+      if item.kind == "mount" and not HasMount(item.mount) then
+        pending = pending + 1
+      end
+    end
+  end
+
   local startIndex = currentScrollOffset + 1
-  local totalMounts, collectedMounts, missingMounts, favoriteMounts = GetCollectionStats()
+  local totalMounts, collectedMounts, _, pinnedMounts = GetCollectionStats()
   local collectionPercent = totalMounts > 0 and math.floor((collectedMounts / totalMounts) * 100 + 0.5) or 0
-  local sourceFilterLabel = currentMode == "sources" and L("filterSource") or L("filterType")
-  local filterText = " | " .. L("filterExpansion") .. ": " .. GetOptionLabel(expansionFilterOptions, currentExpansionFilter)
-    .. " | " .. sourceFilterLabel .. ": " .. GetSourceDisplayName(currentSourceFilter)
-    .. " | " .. L("filterCollection") .. ": " .. GetOptionLabel(collectionFilterOptions, currentCollectionFilter)
-
-  if currentMode == "weekly" then
-    filterText = filterText .. " | " .. GetWeeklyResetText()
-  end
-
-  if MountAtlasRuntime.autoCatalogLoading then
-    filterText = filterText .. " | " .. L("catalogLoading")
-  end
-
-  if SearchText() ~= "" then
-    filterText = filterText .. " | " .. L("filterSearch") .. ": " .. currentSearchText
-  end
 
   mainFrame.titleText:SetText(ADDON_DISPLAY_NAME)
   if mainFrame.progressPercent then
@@ -8294,8 +9711,8 @@ RefreshWindow = function()
     mainFrame.progressDetails:SetText(collectedMounts .. " / " .. totalMounts)
   end
 
-  if mainFrame.expansionProgressDetails then
-    mainFrame.expansionProgressDetails:SetText(GetCurrentExpansionProgressText())
+  if mainFrame.pinnedButton then
+    mainFrame.pinnedButton:SetText(L("pinnedCount", pinnedMounts or 0))
   end
 
   if mainFrame.priorityMode then
@@ -8306,26 +9723,27 @@ RefreshWindow = function()
   UpdateDailyRoutePanel()
 
   if mainFrame.statCards then
-    UpdateStatCard(mainFrame.statCards.total, totalMounts, L("statRegistered"))
-    UpdateStatCard(mainFrame.statCards.collected, collectedMounts, L("statCollectedSub"))
-    UpdateStatCard(mainFrame.statCards.missing, missingMounts, L("statMissingSub"))
-    UpdateStatCard(mainFrame.statCards.attempted, attempted, L("statCurrentView"))
-    UpdateStatCard(mainFrame.statCards.favorites, favoriteMounts, L("statMarked"))
+    UpdateStatCard(mainFrame.statCards.results, CountResultsIgnoringCollection(itemCount), L("statFiltered"))
+    UpdateStatCard(mainFrame.statCards.pending, pending, L("statCurrentView"))
   end
 
   UpdateFilterButtons()
 
-  if currentMode == "achievements" then
-    mainFrame.summaryText:SetText(L("achievementsSummary", #items, filterText))
-  elseif currentMode == "favorites" then
-    mainFrame.summaryText:SetText(L("favoritesSummary", #items, GetCharacterKey(), filterText))
-  elseif currentMode == "missingEasy" then
-    mainFrame.summaryText:SetText(L("missingEasySummary", #items, filterText))
-  elseif currentMode == "sources" then
-    mainFrame.summaryText:SetText(L("sourceWindowSummary", #items, filterText))
-  else
-    mainFrame.summaryText:SetText(L("mountsSummary", pending, attempted, GetCharacterKey(), filterText))
+  local summaryText = modeLabels[currentMode] or currentMode
+
+  if currentMode == "weekly" then
+    summaryText = summaryText .. " | " .. GetWeeklyResetText()
   end
+
+  if SearchText() ~= "" then
+    summaryText = summaryText .. " | " .. L("filterSearch") .. ": " .. currentSearchText
+  end
+
+  if MountAtlasRuntime.autoCatalogLoading then
+    summaryText = summaryText .. " | " .. L("catalogLoading")
+  end
+
+  mainFrame.summaryText:SetText(summaryText)
 
   for mode, button in pairs(mainFrame.tabs) do
     SetButtonSelected(button, mode == currentMode)
@@ -8370,6 +9788,13 @@ RefreshWindow = function()
 
   if #items == 0 then
     ClearMountPreview(L("previewNoResults"))
+  elseif shouldPreservePreview then
+    local ok, err = pcall(ShowMountPreview, selectedPreviewMount)
+
+    if not ok then
+      Print("Preview error: " .. tostring(err))
+      ClearMountPreview(previewMount and L("previewClickToLoad") or L("previewNoPageModel"))
+    end
   elseif previewMount then
     ClearMountPreview(L("previewClickToLoad"))
   else
@@ -8407,17 +9832,77 @@ RefreshWindow = function()
   end
 end
 
+function NormalizeVisibleMode(mode)
+  if mode == "sources"
+    or mode == "reputation"
+    or mode == "tradingpost" then
+    return "today"
+  end
+
+  if mode == "favorites" then
+    return "pinned"
+  end
+
+  return mode or "today"
+end
+
+function TransitionVisibleMode(mode)
+  local nextMode = NormalizeVisibleMode(mode)
+
+  if nextMode == "pinned" and currentMode ~= "pinned" then
+    filtersBeforePinnedMode = {
+      expansion = currentExpansionFilter,
+      collection = currentCollectionFilter,
+      search = currentSearchText
+    }
+    currentExpansionFilter = "all"
+    currentSourceGroupFilter = "all"
+    currentSourceFilter = "all"
+    currentCollectionFilter = "all"
+    currentSearchText = ""
+  elseif currentMode == "pinned" and nextMode ~= "pinned" then
+    local previous = filtersBeforePinnedMode or {}
+
+    currentExpansionFilter = previous.expansion or "all"
+    currentCollectionFilter = previous.collection or "missing"
+    currentSearchText = previous.search or ""
+    filtersBeforePinnedMode = nil
+  end
+
+  currentMode = nextMode
+  return nextMode
+end
+
+function SyncMainSearchBox()
+  if mainFrame and mainFrame.searchBox then
+    mainFrame.searchBox:SetText(currentSearchText)
+    mainFrame.searchBox:ClearFocus()
+  end
+end
+
 SetMode = function(mode)
-  currentMode = mode or "today"
+  TransitionVisibleMode(mode)
   ApplyModeDefaults(currentMode)
+  SyncMainSearchBox()
   ResetListScroll()
   RefreshWindow()
 end
 
+function ToggleModeButton(mode)
+  local buttonMode = NormalizeVisibleMode(mode)
+
+  if currentMode == buttonMode then
+    SetMode("all")
+  else
+    SetMode(buttonMode)
+  end
+end
+
 function OpenWindow(mode)
   CreateWindow()
-  currentMode = mode or currentMode or "today"
+  TransitionVisibleMode(mode or currentMode or "today")
   ApplyModeDefaults(currentMode)
+  SyncMainSearchBox()
   ResetListScroll()
   mainFrame:SetFrameStrata("DIALOG")
   mainFrame:SetFrameLevel(60)
@@ -8657,6 +10142,7 @@ end
 
 function PrintFilters()
   Print(L("filtersExpansionLine", GetOptionLabel(expansionFilterOptions, currentExpansionFilter)))
+  Print(L("filtersSourceGroupLine", GetOptionLabel(sourceGroupOptions, currentSourceGroupFilter)))
   Print(L("filtersSourceLine", GetSourceDisplayName(currentSourceFilter)))
   Print(L("filtersCollectionLine", GetOptionLabel(collectionFilterOptions, currentCollectionFilter)))
   Print(L("filtersSearchLine", currentSearchText ~= "" and currentSearchText or L("searchNone")))
@@ -8687,11 +10173,6 @@ HandleSlashCommand = function(msg)
     or rawCommand == "mini"
     or rawCommand == "icono" then
     RestoreMinimapButton()
-    return
-  end
-
-  if rawCommand == "debug" then
-    Print("debug: " .. ADDON_REVISION .. ", slash-ok, minimap=" .. tostring(minimapButton ~= nil) .. ", error=" .. tostring(lastMinimapError or "none"))
     return
   end
 
@@ -8750,7 +10231,6 @@ HandleSlashCommand = function(msg)
 
   if command == "alerta"
     or command == "alert"
-    or command == "testalert"
     or command == "nueva"
     or command == "premio" then
     local mount = rest ~= "" and FindMount(rest) or nil
@@ -8775,7 +10255,20 @@ HandleSlashCommand = function(msg)
   end
 
   if command == "reputacion" or command == "rep" or command == "reputation" or command == "reputacao" or command == "ruf" then
-    OpenWindow("reputation")
+    OpenWindow("today")
+    return
+  end
+
+  if command == "tradingpost"
+    or command == "trading"
+    or rawCommand == "trading post"
+    or command == "puesto"
+    or rawCommand == "puesto comercial" then
+    currentExpansionFilter = "Trading Post"
+    currentSourceGroupFilter = "all"
+    currentSourceFilter = "all"
+    currentCollectionFilter = "all"
+    OpenWindow("today")
     return
   end
 
@@ -8800,12 +10293,18 @@ HandleSlashCommand = function(msg)
   end
 
   if command == "todas" or command == "all" or command == "toutes" or command == "alle" then
-    OpenWindow("all")
+    currentCollectionFilter = "all"
+    OpenWindow("today")
     return
   end
 
-  if command == "favoritos" or command == "favorites" or command == "favoris" or command == "favoriten" then
-    OpenWindow("favorites")
+  if command == "fijadas"
+    or command == "pinned"
+    or command == "favoritos"
+    or command == "favorites"
+    or command == "favoris"
+    or command == "favoriten" then
+    OpenWindow("pinned")
     return
   end
 
@@ -8826,8 +10325,9 @@ HandleSlashCommand = function(msg)
 
   if command == "limpiar" or command == "clearfilters" or command == "limpar" or command == "effacer" or command == "loeschen" then
     currentExpansionFilter = "all"
+    currentSourceGroupFilter = "all"
     currentSourceFilter = "all"
-    currentCollectionFilter = "missing"
+    currentCollectionFilter = currentMode == "pinned" and "all" or "missing"
     currentSearchText = ""
     ApplyModeDefaults(currentMode)
 
@@ -8853,7 +10353,7 @@ HandleSlashCommand = function(msg)
       if mainFrame and mainFrame:IsShown() then
         RefreshWindow()
       else
-        OpenWindow(currentMode or "all")
+        OpenWindow(currentMode or "today")
       end
     else
       Print(L("collectionNotFound"))
@@ -8867,6 +10367,7 @@ HandleSlashCommand = function(msg)
 
     if value then
       currentExpansionFilter = value
+      currentSourceGroupFilter = "all"
       currentSourceFilter = "all"
       ApplyModeDefaults(currentMode)
       Print(L("expansionFilterSet", GetOptionLabel(expansionFilterOptions, currentExpansionFilter)))
@@ -8879,35 +10380,17 @@ HandleSlashCommand = function(msg)
   end
 
   if command == "tipo" or command == "fuente" or command == "source" or command == "fonte" or command == "quelle" then
-    if rest == "" then
-      OpenWindow("sources")
-      return
-    end
-
-    local value = FindOptionValue(sourceFilterOptions, rest)
-
-    if value then
-      currentSourceFilter = value
-      if currentMode == "reputation" or currentMode == "events" then
-        currentMode = "sources"
-      end
-      Print(L("sourceFilterSet", GetSourceDisplayName(currentSourceFilter)))
-      ShowAllMountsForSource()
-    else
-      Print(L("sourceNotFound"))
-    end
-
+    OpenWindow("today")
     return
   end
 
   if command == "fuentes" or command == "sources" or command == "fontes" or command == "quellen" then
-    OpenWindow("sources")
+    OpenWindow("today")
     return
   end
 
   if command == "vendedores" or command == "vendor" or command == "vendors" or command == "vendeurs" or command == "haendler" then
-    currentSourceFilter = "Vendor"
-    OpenWindow("sources")
+    OpenWindow("today")
     return
   end
 
@@ -8920,7 +10403,7 @@ HandleSlashCommand = function(msg)
     end
 
     Print(currentSearchText ~= "" and L("searchSet", currentSearchText) or L("searchCleared"))
-    OpenWindow(currentMode or "all")
+    OpenWindow(currentMode or "today")
     return
   end
 
@@ -8929,9 +10412,13 @@ HandleSlashCommand = function(msg)
     return
   end
 
-  if command == "fav" or command == "favorito" then
+  if command == "fav"
+    or command == "favorito"
+    or command == "fijar"
+    or command == "fijada"
+    or command == "pin" then
     if rest == "" then
-      OpenWindow("favorites")
+      OpenWindow("pinned")
       return
     end
 
@@ -9019,8 +10506,20 @@ addon:SetScript("OnEvent", function(_, event, ...)
     return
   end
 
+  if event == "UI_SCALE_CHANGED" then
+    SyncMountAtlasWindowScale()
+    return
+  end
+
   if event == "PLAYER_ENTERING_WORLD" then
+    RegisterSlashCommands()
+
+    if C_Timer and C_Timer.After then
+      C_Timer.After(1, RegisterSlashCommands)
+    end
+
     TryCreateMinimapButton()
+    ScheduleMountAtlasPreload(0.2)
     ScheduleCharacterSnapshot(5)
     ScheduleMountCollectionScan(false)
     return
@@ -9049,9 +10548,11 @@ addon:SetScript("OnEvent", function(_, event, ...)
     if event == "COMPANION_LEARNED"
       or event == "NEW_MOUNT_ADDED" then
       InvalidateMountJournalCaches()
+      ScheduleMountAtlasPreload(0.2)
       ScheduleMountCollectionScan(true)
     elseif event == "MOUNT_JOURNAL_USABILITY_CHANGED" then
       InvalidateMountJournalCaches()
+      ScheduleMountAtlasPreload(0.2)
       ScheduleMountCollectionScan(true)
     else
       InvalidateMountAtlasDataCache()
@@ -9097,5 +10598,6 @@ addon:SetScript("OnEvent", function(_, event, ...)
   SafeCall(addon.RegisterEvent, addon, "MOUNT_JOURNAL_USABILITY_CHANGED")
 
   ScheduleCharacterSnapshot(5)
+  ScheduleMountAtlasPreload(0.5)
   ScheduleMountCollectionScan(false)
 end)

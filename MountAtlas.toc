@@ -1,9 +1,9 @@
-## Interface: 120005
+## Interface: 120007
 ## Title: MountAtlas
 ## Notes: Discover what mounts you can farm today.
 ## IconTexture: Interface\AddOns\MountAtlas\Textures\MountAtlas.tga
 ## Author: Alex
-## Version: 1.1.0
+## Version: 2.0.1
 ## SavedVariables: MountAtlasDB
 
 Data.lua
